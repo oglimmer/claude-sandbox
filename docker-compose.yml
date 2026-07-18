@@ -7,7 +7,7 @@ services:
   # containers are entirely separate from the host's.
   dind:
     image: docker:28-dind
-    container_name: safe-claude-dind
+    container_name: claude-sandbox-dind
     privileged: true
     environment:
       # Plain TCP on the private compose network only; nothing is published to
@@ -37,8 +37,8 @@ services:
         # Match these to your host user so bind-mounted files stay writable.
         USER_UID: 1000
         USER_GID: 1000
-    image: safe-claude:latest
-    container_name: safe-claude
+    image: claude-sandbox:latest
+    container_name: claude-sandbox
     # Keep stdin/tty open so you can attach an interactive shell / the CLI.
     stdin_open: true
     tty: true

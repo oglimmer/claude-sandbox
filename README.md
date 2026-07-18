@@ -1,4 +1,4 @@
-# safe-claude
+# claude-sandbox
 
 A disposable Docker sandbox for running [Claude Code](https://claude.com/claude-code)
 in an isolated container instead of directly on your host. Claude Code runs as a
@@ -289,6 +289,6 @@ build args in `docker-compose.yml`.
 - Run Claude Code *with* permission prompts (override the default):
   `docker compose run --rm claude claude`
 - Run a long-lived container you can exec into repeatedly:
-  `docker compose run -d --name safe-claude claude sleep infinity`, then
-  `docker exec -it safe-claude claude`
+  `docker compose run -d --name claude-sandbox claude sleep infinity`, then
+  `docker exec -it claude-sandbox claude`
 - Rebuild after changing the Dockerfile: `docker compose build --no-cache`
