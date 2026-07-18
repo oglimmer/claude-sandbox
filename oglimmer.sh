@@ -22,6 +22,7 @@ HELP=false
 
 COMMAND=""
 PROFILE_OVERRIDE=""
+WORKSPACE_OVERRIDE=""
 ARGS=()
 MCP_ENV=()
 MCP_URL=""
@@ -75,14 +76,17 @@ show_help() {
     cat <<EOF
 ${BOLD}Usage:${RESET} ${SCRIPT_NAME} [OPTIONS] [COMMAND]
 
-Manage per-workspace sandbox profiles — the skills, plugins and MCP servers
-that a given WORKSPACE_DIR gets. See profiles/README.md.
+Manage per-workspace sandbox profiles — the directory the sandbox works on,
+plus the skills, plugins and MCP servers it gets. See profiles/README.md.
 
 ${BOLD}COMMANDS:${RESET}
     list [PROFILE]              Show skills, plugins and MCP servers (default),
                                 plus anything installed from inside the sandbox
     profiles                    List every profile and mark the active one
-    new PROFILE                 Create a profile skeleton and its state directory
+    new PROFILE DIR             Create a profile for workspace DIR, plus its
+                                state directory
+    workspace PROFILE [DIR]     Show the directory a profile works on, or
+                                change it to DIR
     mcp-add PROFILE NAME -- CMD [ARGS...]
                                 Add a stdio MCP server to the profile
     mcp-add PROFILE NAME --url URL
@@ -97,6 +101,7 @@ ${BOLD}COMMANDS:${RESET}
 
 ${BOLD}OPTIONS:${RESET}
     -p, --profile NAME          Act on this profile instead of the active one
+    -w, --workspace DIR         Mount DIR for this run instead of the profile's
     -v, --verbose               Show the commands being run
         --dry-run               Print what would change without writing
     -h, --help                  Show this help
@@ -114,11 +119,26 @@ ${BOLD}WHICH PROFILE:${RESET}
 
     Use 'common' as the profile to reach the skills every profile inherits.
 
+${BOLD}WHICH WORKSPACE:${RESET}
+    A profile owns the directory it works on — 'new' records it in
+    profiles/PROFILE/workspace, and 'run' mounts it at /workspace. One profile
+    per workspace: the session history in profile-state/PROFILE only makes
+    sense against the repo it was recorded from.
+
+    Highest wins:
+        -w DIR  >  WORKSPACE_DIR in the environment  >  the profile  >  .env
+
+    Change it later with 'workspace PROFILE DIR'. Note that the profile's
+    session history stays behind — if the new directory is a different project,
+    a new profile is usually what you want, or 'run -c' resumes the old one.
+
 ${BOLD}EXAMPLES:${RESET}
     ${SCRIPT_NAME} list                     # the active profile
     ${SCRIPT_NAME} -p my-api list           # a specific one
     ${SCRIPT_NAME} -p my-api run -c         # run it, continue its last session
-    ${SCRIPT_NAME} new my-api
+    ${SCRIPT_NAME} new my-api ~/dev/my-api
+    ${SCRIPT_NAME} workspace my-api         # where does it point?
+    ${SCRIPT_NAME} workspace my-api ~/dev/my-api-v2
     ${SCRIPT_NAME} mcp-add my-api playwright -- npx -y @playwright/mcp@latest
     ${SCRIPT_NAME} mcp-add my-api grafana --env GRAFANA_URL=\${GRAFANA_URL} -- uvx mcp-grafana
     ${SCRIPT_NAME} skill-add common ~/.claude/skills/renovate-config
@@ -146,6 +166,11 @@ parse_args() {
             -p|--profile)
                 [[ $# -ge 2 ]] || { log_error "--profile needs a profile name"; exit 1; }
                 PROFILE_OVERRIDE="$2"
+                shift 2
+                ;;
+            -w|--workspace)
+                [[ $# -ge 2 ]] || { log_error "--workspace needs a directory"; exit 1; }
+                WORKSPACE_OVERRIDE="$2"
                 shift 2
                 ;;
             --dry-run)
@@ -233,11 +258,105 @@ resolve_profile() {
     fi
 }
 
+# The workspace a profile owns, as recorded by `new` — empty if it has none.
+# One value per file; comments and blank lines are ignored so the file can
+# explain itself.
+profile_workspace() {
+    local file="$PROFILES_DIR/$1/workspace"
+    [[ -f "$file" ]] || return 0
+    # `|| true`: grep exits 1 on a file holding nothing but comments, and with
+    # `set -o pipefail` that would abort the caller's assignment.
+    { grep -vE '^[[:space:]]*(#|$)' "$file" 2>/dev/null || true; } \
+        | head -1 | tr -d '\r' | sed 's/[[:space:]]*$//'
+}
+
+# Compose resolves a relative bind-mount source against the directory holding
+# docker-compose.yml, so `./workspace` must mean the same here to be checked.
+workspace_abs() {
+    local dir="$1"
+    case "$dir" in
+        /*) echo "$dir" ;;
+        "") echo "" ;;
+        *)  echo "$SCRIPT_DIR/${dir#./}" ;;
+    esac
+}
+
+# Which directory a run should mount, in the same precedence order as the
+# profile itself: explicit flag, then the environment, then the profile. Empty
+# means nothing was declared and compose falls back to .env / ./workspace.
+resolve_workspace() {
+    local profile="$1"
+    if [[ -n "$WORKSPACE_OVERRIDE" ]]; then
+        echo "$WORKSPACE_OVERRIDE"
+    elif [[ -n "${WORKSPACE_DIR:-}" ]]; then
+        echo "$WORKSPACE_DIR"
+    else
+        profile_workspace "$profile"
+    fi
+}
+
+# Normalize a workspace argument, or exit. A path that doesn't exist yet would
+# be bind-mounted anyway — compose creates a missing source as root — so the
+# typo is caught here instead of surfacing as an empty /workspace.
+normalize_workspace() {
+    local dir="${1%/}"
+    if [[ ! -d "$(workspace_abs "$dir")" ]]; then
+        log_error "Not a directory: $dir"
+        exit 1
+    fi
+    # ./-relative paths are stored verbatim (they travel with the repo);
+    # everything else becomes absolute, so the profile doesn't depend on the
+    # working directory it was set from.
+    if [[ "$dir" != /* && "$dir" != ./* ]]; then
+        dir="$(cd "$dir" && pwd)"
+    fi
+    echo "$dir"
+}
+
+# Warn rather than refuse: two profiles on one repo is occasionally what you
+# want (different MCP grants), but it is usually a copy-paste slip, and their
+# session histories then diverge silently.
+warn_workspace_shared() {
+    local workspace="$1" exclude="${2:-}" other abs
+    abs=$(workspace_abs "$workspace")
+    while IFS= read -r other; do
+        [[ -n "$other" && "$other" != "common" && "$other" != "$exclude" ]] || continue
+        if [[ "$(workspace_abs "$(profile_workspace "$other")")" == "$abs" ]]; then
+            log_warning "Profile '$other' already works on $workspace"
+        fi
+    done < <(find -L "$PROFILES_DIR" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null | sort)
+}
+
+write_workspace() {
+    local profile="$1" workspace="$2"
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo -e "${DIM}[DRY-RUN]${RESET} would write $workspace to $PROFILES_DIR/$profile/workspace"
+        return 0
+    fi
+    printf '# The directory this profile works on, mounted at /workspace.\n%s\n' \
+        "$workspace" >"$PROFILES_DIR/$profile/workspace"
+}
+
+# How many session transcripts a profile has recorded. Every workspace mounts at
+# /workspace, so they all land in projects/-workspace regardless of which repo
+# they were about — which is exactly why repointing a profile is worth a warning.
+# Guarded because `set -o pipefail` is on: find exits non-zero on a missing
+# directory, which would otherwise fail the assignment and, under `set -e`,
+# abort the script.
+session_count() {
+    local dir="$STATE_DIR/$1/projects"
+    if [[ ! -d "$dir" ]]; then
+        echo 0
+        return 0
+    fi
+    { find -L "$dir" -name '*.jsonl' 2>/dev/null || true; } | wc -l | tr -d ' '
+}
+
 require_profile_dir() {
     local profile="$1"
     if [[ ! -d "$PROFILES_DIR/$profile" ]]; then
         log_error "No such profile: $profile"
-        log_info "Create it with: ${SCRIPT_NAME} new $profile"
+        log_info "Create it with: ${SCRIPT_NAME} new $profile DIR"
         exit 1
     fi
 }
@@ -422,6 +541,15 @@ cmd_list() {
     echo
     echo -e "${BOLD}Profile:${RESET} ${profile}${marker}"
     echo -e "  ${DIM}config${RESET}  profiles/$profile"
+    local workspace
+    workspace=$(profile_workspace "$profile")
+    if [[ -z "$workspace" ]]; then
+        echo -e "  ${DIM}mount${RESET}   ${YELLOW}no workspace declared — falls back to .env's WORKSPACE_DIR${RESET}"
+    elif [[ -d "$(workspace_abs "$workspace")" ]]; then
+        echo -e "  ${DIM}mount${RESET}   $workspace ${DIM}→ /workspace${RESET}"
+    else
+        echo -e "  ${DIM}mount${RESET}   $workspace ${RED}(missing — compose would create it as root)${RESET}"
+    fi
     if [[ -d "$STATE_DIR/$profile" ]]; then
         if [[ -f "$STATE_DIR/$profile/.credentials.json" ]]; then
             echo -e "  ${DIM}state${RESET}   profile-state/$profile ${GREEN}(logged in)${RESET}"
@@ -460,7 +588,9 @@ cmd_profiles() {
         [[ "$profile" == "common" ]] && continue
         local marker="" counts skills mcps
         [[ "$profile" == "$active" ]] && marker=" ${GREEN}←${RESET}"
-        skills=$(find -L "$PROFILES_DIR/$profile/skills" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+        # `|| true` for the same pipefail reason as profile_workspace: a profile
+        # without a skills/ directory would otherwise abort the listing.
+        skills=$({ find -L "$PROFILES_DIR/$profile/skills" -mindepth 1 -maxdepth 1 -type d 2>/dev/null || true; } | wc -l | tr -d ' ')
         mcps=$(jq -r '.mcpServers // {} | length' "$PROFILES_DIR/$profile/mcp.json" 2>/dev/null || echo 0)
         counts="${skills} skills, ${mcps} mcp"
         echo -e "  ${profile}${marker}  ${DIM}${counts}${RESET}"
@@ -472,8 +602,10 @@ cmd_profiles() {
 
 cmd_new() {
     local profile="${ARGS[0]:-}"
-    if [[ -z "$profile" ]]; then
-        log_error "Usage: ${SCRIPT_NAME} new PROFILE"
+    local workspace="${ARGS[1]:-}"
+    if [[ -z "$profile" || -z "$workspace" ]]; then
+        log_error "Usage: ${SCRIPT_NAME} new PROFILE DIR"
+        log_info "DIR is the repo this profile works on, e.g. ~/dev/my-api"
         exit 1
     fi
     if [[ -d "$PROFILES_DIR/$profile" ]]; then
@@ -481,15 +613,66 @@ cmd_new() {
         exit 1
     fi
 
+    workspace=$(normalize_workspace "$workspace")
+    warn_workspace_shared "$workspace"
+
     execute_cmd mkdir -p "$PROFILES_DIR/$profile/skills"
     # Pre-create the state directory: compose would otherwise create it as root,
     # which is the usual cause of a profile that silently does nothing.
     execute_cmd mkdir -p "$STATE_DIR/$profile"
-    log_success "Created profile '$profile'"
+    write_workspace "$profile" "$workspace"
+    log_success "Created profile '$profile' for $workspace"
     echo
-    log_info "Point .env at it:"
-    echo "    WORKSPACE_DIR=/path/to/your/repo"
+    log_info "Start it with:"
+    echo "    ${SCRIPT_NAME} -p $profile run"
+    log_info "Or make it the default in .env:"
     echo "    CLAUDE_PROFILE=$profile"
+}
+
+cmd_workspace() {
+    local profile="${ARGS[0]:-}"
+    local workspace="${ARGS[1]:-}"
+
+    if [[ -z "$profile" ]]; then
+        log_error "Usage: ${SCRIPT_NAME} workspace PROFILE [DIR]"
+        exit 1
+    fi
+    require_profile_dir "$profile"
+
+    local current
+    current=$(profile_workspace "$profile")
+
+    # No DIR: report what it is now, so the command doubles as a lookup.
+    if [[ -z "$workspace" ]]; then
+        if [[ -z "$current" ]]; then
+            log_warning "Profile '$profile' declares no workspace — it falls back to .env"
+            log_info "Set one with: ${SCRIPT_NAME} workspace $profile DIR"
+            exit 1
+        fi
+        echo "$current"
+        return 0
+    fi
+
+    workspace=$(normalize_workspace "$workspace")
+    if [[ "$(workspace_abs "$workspace")" == "$(workspace_abs "$current")" ]]; then
+        log_info "Profile '$profile' already works on $workspace"
+        return 0
+    fi
+    warn_workspace_shared "$workspace" "$profile"
+
+    # Sessions are keyed by working directory and every workspace mounts at
+    # /workspace, so the history recorded against the old repo stays behind and
+    # `run -c` would resume it. Warn rather than refuse: repointing is right when
+    # the same project simply moved on disk.
+    local sessions
+    sessions=$(session_count "$profile")
+    if [[ -n "$current" && "$sessions" -gt 0 ]]; then
+        log_warning "'$profile' has $sessions session(s) recorded against $current"
+        log_warning "'run -c' would resume one of those. For a different project, prefer a new profile."
+    fi
+
+    write_workspace "$profile" "$workspace"
+    log_success "Profile '$profile' now works on $workspace"
 }
 
 cmd_mcp_add() {
@@ -675,6 +858,7 @@ cmd_skill_rm() {
 cmd_doctor() {
     local issues=0
     local active
+    local workspace_owners=()
     active=$(active_profile)
 
     echo
@@ -700,8 +884,34 @@ cmd_doctor() {
         done
 
         if [[ ! -d "$STATE_DIR/$profile" ]]; then
-            log_warning "$profile: no state directory — compose will create it as root. Run: ${SCRIPT_NAME} new $profile"
+            log_warning "$profile: no state directory — compose will create it as root. Run: mkdir -p profile-state/$profile"
             issues=$((issues + 1))
+        fi
+
+        # The workspace is what makes the rest of the profile mean anything: the
+        # session history in profile-state only matches the repo it came from.
+        local workspace
+        workspace=$(profile_workspace "$profile")
+        if [[ -z "$workspace" ]]; then
+            log_warning "$profile: no workspace declared — it falls back to .env, so which repo it mounts depends on the last edit there"
+            issues=$((issues + 1))
+        elif [[ ! -d "$(workspace_abs "$workspace")" ]]; then
+            log_error "$profile: workspace $workspace does not exist — compose would create it as root and mount an empty tree"
+            issues=$((issues + 1))
+        else
+            # Plain indexed array rather than an associative one: this has to
+            # run on the bash 3.2 that macOS ships.
+            local abs seen="" entry
+            abs=$(workspace_abs "$workspace")
+            for entry in ${workspace_owners+"${workspace_owners[@]}"}; do
+                [[ "${entry%%$'\t'*}" == "$abs" ]] && seen="${entry#*$'\t'}"
+            done
+            if [[ -n "$seen" ]]; then
+                log_warning "$profile: works on the same directory as '$seen' ($workspace) — their session histories will diverge"
+                issues=$((issues + 1))
+            else
+                workspace_owners+=("$abs"$'\t'"$profile")
+            fi
         fi
 
         local mcp_file="$PROFILES_DIR/$profile/mcp.json"
@@ -789,12 +999,31 @@ cmd_run() {
         execute_cmd mkdir -p "$STATE_DIR/$profile"
     fi
 
+    # The workspace the profile owns. Exported rather than left to .env so the
+    # profile and the directory it works on can't drift apart — the session
+    # history in profile-state/$profile only matches the repo it came from.
+    local workspace
+    workspace=$(resolve_workspace "$profile")
+    if [[ -z "$workspace" ]]; then
+        log_warning "Profile '$profile' declares no workspace — falling back to .env's WORKSPACE_DIR"
+        log_info "Pin it with: echo /path/to/repo > profiles/$profile/workspace"
+    elif [[ ! -d "$(workspace_abs "$workspace")" ]]; then
+        # Compose would create it as root and start Claude on an empty tree.
+        log_error "Workspace does not exist: $workspace"
+        exit 1
+    fi
+
     log_info "Starting sandbox with profile '$profile'"
+    [[ -n "$workspace" ]] && log_info "Workspace: $workspace"
     [[ -n "$claude_args" ]] && log_verbose "claude args: $claude_args"
 
-    # CLAUDE_PROFILE is passed explicitly so --profile reaches compose too.
-    execute_cmd env CLAUDE_PROFILE="$profile" CLAUDE_ARGS="$claude_args" \
-        docker compose run --rm claude
+    # Both passed explicitly so -p / -w reach compose, which reads them for the
+    # claude *and* dind mounts — the two must resolve to the same tree. Built as
+    # an array so a path with spaces survives.
+    local env_args=(CLAUDE_PROFILE="$profile" CLAUDE_ARGS="$claude_args")
+    [[ -n "$workspace" ]] && env_args+=(WORKSPACE_DIR="$workspace")
+
+    execute_cmd env "${env_args[@]}" docker compose run --rm claude
 }
 
 main() {
@@ -811,6 +1040,7 @@ main() {
         list)      cmd_list ;;
         profiles)  cmd_profiles ;;
         new)       cmd_new ;;
+        workspace) cmd_workspace ;;
         mcp-add)   cmd_mcp_add ;;
         mcp-rm)    cmd_mcp_rm ;;
         skill-add) cmd_skill_add ;;

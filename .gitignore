@@ -1,4 +1,4 @@
-# Local config: API key, git identity, WORKSPACE_DIR. Committing this would
+# Local config: API key, git identity, default profile. Committing this would
 # leak ANTHROPIC_API_KEY. Track .env.example instead.
 .env
 

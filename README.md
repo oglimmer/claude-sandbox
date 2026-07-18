@@ -14,7 +14,7 @@ rest of your machine.
 | `entrypoint.sh`      | Seeds git identity, fixes up the ssh config, prepares cache dirs    |
 | `claude-settings.json` | Baseline Claude Code settings, seeded into each profile on first run |
 | `oglimmer.sh`        | Manages profiles and runs the sandbox (`list`, `new`, `run`, `doctor`) |
-| `.env.example`       | Optional `ANTHROPIC_API_KEY`, git identity, `WORKSPACE_DIR`         |
+| `.env.example`       | Optional `ANTHROPIC_API_KEY`, git identity, default profile         |
 | `docker-compose.override.yml.example` | Template for machine-specific mounts               |
 | `workspace/`         | The code Claude works on (bind-mounted into the container)          |
 | `profiles/`          | Per-workspace skills, plugins and MCP servers (versioned)           |
@@ -120,10 +120,11 @@ docker compose run --rm claude claude --dangerously-skip-permissions -c
 ```
 
 > Sessions are keyed by working directory, and `working_dir` is always
-> `/workspace`. Per-profile state is what stops that from mattering: give each
-> `WORKSPACE_DIR` its own profile and `-c` resumes that workspace's history. Point
-> two workspaces at one profile and `-c` will happily resume a conversation about
-> the other one.
+> `/workspace`. Per-profile state is what stops that from mattering: each profile
+> owns one workspace, so `-c` resumes that workspace's history. Point a profile
+> at a different directory (with `-w`, say) and `-c` will happily resume a
+> conversation about the other one — `doctor` flags two profiles sharing a
+> directory for the same reason.
 
 `docker compose down -v` wipes the dind image cache, not your sessions — those
 are host directories now. To reset a profile, delete `profile-state/<profile>/`
@@ -171,22 +172,19 @@ credential helpers), and the container's git config stays writable.
 
 ## Working on your own repo
 
-Point `WORKSPACE_DIR` at it in `.env` — both services read that variable, and
-they must agree (see [Docker in Docker](#docker-in-docker)):
+Give it a profile — the profile records the directory, so from then on its name
+is all you need:
 
 ```bash
-echo "WORKSPACE_DIR=$HOME/dev/my-project" >> .env
+./oglimmer.sh new my-project ~/dev/my-project
+./oglimmer.sh -p my-project run
 ```
 
 ## Profiles
 
-Each workspace gets its own skills, plugins and MCP servers. `CLAUDE_PROFILE`
-picks which profile directory is mounted, so it travels with `WORKSPACE_DIR`:
-
-```bash
-mkdir -p profiles/my-project/skills profile-state/my-project
-printf 'WORKSPACE_DIR=%s/dev/my-project\nCLAUDE_PROFILE=my-project\n' "$HOME" >> .env
-```
+Each workspace gets its own skills, plugins and MCP servers — and owns the
+directory it works on, recorded in `profiles/<name>/workspace` and mounted at
+`/workspace` by both services (see [Docker in Docker](#docker-in-docker)).
 
 | In the profile | Reaches Claude Code as |
 | -------------- | ---------------------- |
@@ -215,7 +213,9 @@ and showing what a workspace actually gets:
 ```bash
 ./oglimmer.sh list                      # skills, plugins and MCP for the active profile
 ./oglimmer.sh profiles                  # every profile, active one marked
-./oglimmer.sh new my-api                # profile skeleton + state directory
+./oglimmer.sh new my-api ~/dev/my-api   # profile + workspace + state directory
+./oglimmer.sh workspace my-api          # which directory does it work on?
+./oglimmer.sh workspace my-api ~/dev/v2 # repoint it
 ./oglimmer.sh mcp-add my-api playwright -- npx -y @playwright/mcp@latest
 ./oglimmer.sh skill-add common ~/.claude/skills/renovate-config
 ./oglimmer.sh doctor                    # find the usual breakages
@@ -230,18 +230,37 @@ and showing what a workspace actually gets:
 ./oglimmer.sh -p my-api list        # inspect it
 ```
 
-For a lasting switch, change `CLAUDE_PROFILE` in `.env` — and repoint
-`WORKSPACE_DIR` with it, since a profile is meant to pair with one workspace.
-`CLAUDE_PROFILE=my-api ./oglimmer.sh run` works too; precedence is `-p` >
+Switching profiles switches the workspace with it — that pairing is the point.
+For a lasting change, set `CLAUDE_PROFILE` in `.env`;
+`CLAUDE_PROFILE=my-api ./oglimmer.sh run` works too. Precedence is `-p` >
 environment > `.env` > `default`, matching what docker compose itself does.
 
-`run` refuses an unknown profile rather than letting compose create the
-directory as root and start you in an empty one.
+To point a profile at a different directory for one run, use `-w`:
 
-`doctor` catches what otherwise fails silently: invalid `mcp.json`, `${VAR}`
-references that aren't set in `.env` or lack a passthrough in
-`docker-compose.yml`, root-owned directories compose created, skill directories
-missing a `SKILL.md`, and state directories left behind by deleted profiles.
+```bash
+./oglimmer.sh -p my-api -w ~/dev/scratch run
+```
+
+To change it for good, `workspace`:
+
+```bash
+./oglimmer.sh workspace my-api ~/dev/my-api-v2
+```
+
+It validates like `new` does, and warns if the profile already has session
+history — that history is keyed by the `/workspace` mount point, not the repo,
+so it stays behind and `run -c` would resume a conversation about the old
+directory. For a genuinely different project, prefer a second profile.
+
+`run` refuses an unknown profile, and a workspace that doesn't exist, rather
+than letting compose create either as root and starting you in an empty tree.
+
+`doctor` catches what otherwise fails silently: a profile with no workspace or a
+workspace that has gone missing, two profiles sharing one directory, invalid
+`mcp.json`, `${VAR}` references that aren't set in `.env` or lack a passthrough
+in `docker-compose.yml`, root-owned directories compose created, skill
+directories missing a `SKILL.md`, and state directories left behind by deleted
+profiles.
 
 `--dry-run` and `-v` work throughout. `list` redacts literal secret values and
 flags them, so the output is safe to paste.
@@ -360,11 +379,12 @@ this repo is that it can't.
 
 The workspace is bind-mounted into **both** containers at the same path
 (`/workspace`), because `docker run -v /workspace/x:/y` is resolved by the
-*daemon*, not the CLI. If you repoint the workspace, change it in both services
-— or just set `WORKSPACE_DIR` in `.env`, which both read:
+*daemon*, not the CLI. Both services read the same `WORKSPACE_DIR`, which
+`oglimmer.sh run` exports from the profile — so there is one value to change and
+the two can't diverge:
 
 ```bash
-echo "WORKSPACE_DIR=$HOME/dev/my-project" >> .env
+./oglimmer.sh new my-project ~/dev/my-project
 ```
 
 Images pulled/built inside the sandbox live in the `dind-data` volume and don't

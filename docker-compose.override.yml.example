@@ -30,7 +30,8 @@ services:
       # - ${HOME}/.netrc:/home/claude/.netrc:ro
 
   # Remember the workspace must stay identical in both services — prefer
-  # setting WORKSPACE_DIR in .env over overriding the mount here.
+  # recording it in profiles/<name>/workspace (./oglimmer.sh new PROFILE DIR),
+  # which exports WORKSPACE_DIR for both, over overriding the mount here.
   # dind:
   #   volumes:
   #     - ${WORKSPACE_DIR:-./workspace}:/workspace
