@@ -1,0 +1,20 @@
+# Local config: API key, git identity, WORKSPACE_DIR. Committing this would
+# leak ANTHROPIC_API_KEY. Track .env.example instead.
+.env
+
+# Default workspace bind mount — this is someone's checked-out project, not
+# part of this repo. Keep the directory itself so the default mount target
+# exists on a fresh clone.
+/workspace/*
+!/workspace/.gitkeep
+
+# Per-machine Claude Code permissions (also covered by the user's global
+# ignore, repeated here so the repo stands on its own).
+.claude/settings.local.json
+
+# macOS
+.DS_Store
+
+# Machine-specific compose overrides (local paths, personal tooling).
+# Ship changes via docker-compose.override.yml.example instead.
+docker-compose.override.yml

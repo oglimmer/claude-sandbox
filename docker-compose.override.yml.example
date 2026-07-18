@@ -1,0 +1,36 @@
+# Copy to docker-compose.override.yml for machine-specific mounts. Compose
+# merges that file automatically, and it is gitignored — so your local paths,
+# private tooling and personal setup never end up in a commit.
+#
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#
+# Volume lists are *appended* to the base file's, not replaced, so you only
+# need the entries you're adding.
+
+services:
+  claude:
+    volumes:
+      # ---- Host scripts your git aliases depend on -------------------------
+      # If a global git alias shells out to a helper script (e.g. an
+      # AI-commit-message wrapper), the script has to exist inside the
+      # container and be on PATH. The image already puts
+      # ~/.config/custom-script-bin on PATH; mount whatever holds your scripts
+      # there.
+      - ${HOME}/.config/custom-script-bin:/home/claude/.config/custom-script-bin:ro
+
+      # If any of those scripts is a SYMLINK, note that the link target is an
+      # absolute host path that must resolve identically inside the container.
+      # Mount the target at the very same path — a symlink to
+      # /Users/you/dev/some-tool dangles unless /Users/you/dev/some-tool exists
+      # in the container too:
+      # - ${HOME}/dev/some-tool:/Users/you/dev/some-tool:ro
+
+      # ---- Anything else machine-specific ---------------------------------
+      # - ${HOME}/.aws:/home/claude/.aws:ro
+      # - ${HOME}/.netrc:/home/claude/.netrc:ro
+
+  # Remember the workspace must stay identical in both services — prefer
+  # setting WORKSPACE_DIR in .env over overriding the mount here.
+  # dind:
+  #   volumes:
+  #     - ${WORKSPACE_DIR:-./workspace}:/workspace

@@ -1,0 +1,132 @@
+services:
+  # ---- Docker-in-Docker sidecar -------------------------------------------
+  # A real, isolated Docker daemon for the sandbox. We deliberately do NOT bind
+  # the host's /var/run/docker.sock: handing that to the agent is equivalent to
+  # handing it root on the host (it could `docker run -v /:/host --privileged`).
+  # This daemon is privileged inside its own container only, and its images /
+  # containers are entirely separate from the host's.
+  dind:
+    image: docker:28-dind
+    container_name: safe-claude-dind
+    privileged: true
+    environment:
+      # Plain TCP on the private compose network only; nothing is published to
+      # the host, so no TLS handshake to manage.
+      - DOCKER_TLS_CERTDIR=
+    command: ["--host=tcp://0.0.0.0:2375", "--host=unix:///var/run/docker.sock"]
+    volumes:
+      # Persist the sandbox's image cache across restarts.
+      - dind-data:/var/lib/docker
+      # Mount the workspace at the SAME path as in the claude container. Docker
+      # bind-mount paths in `docker run -v /workspace/x:/y` are resolved by the
+      # *daemon*, so both sides must agree on what /workspace means.
+      # MUST match the claude service's workspace mount exactly, including the
+      # default — if the two diverge, `docker run -v /workspace/...` resolves
+      # against a different tree than the one Claude is editing.
+      - ${WORKSPACE_DIR:-./workspace}:/workspace
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  claude:
+    build:
+      context: .
+      args:
+        # Match these to your host user so bind-mounted files stay writable.
+        USER_UID: 1000
+        USER_GID: 1000
+    image: safe-claude:latest
+    container_name: safe-claude
+    # Keep stdin/tty open so you can attach an interactive shell / the CLI.
+    stdin_open: true
+    tty: true
+    working_dir: /workspace
+    depends_on:
+      dind:
+        condition: service_healthy
+    environment:
+      # Prefer passing the key via a .env file (see below) over hardcoding it.
+      # Leave unset if you authenticate interactively with `claude` (OAuth login).
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - TERM=xterm-256color
+      # Git identity — the entrypoint writes these into the container's git
+      # config. Populate them from your host in .env (see `make-env` note in the
+      # README): GIT_USER_NAME / GIT_USER_EMAIL.
+      - GIT_USER_NAME=${GIT_USER_NAME:-}
+      - GIT_USER_EMAIL=${GIT_USER_EMAIL:-}
+      # Point the docker CLI at the sidecar daemon above.
+      - DOCKER_HOST=tcp://dind:2375
+      # ~/.kube is mounted read-only, so send kubectl's discovery cache
+      # somewhere writable instead of ~/.kube/cache.
+      - KUBECACHEDIR=/home/claude/.cache/kube
+      # Forwarded host ssh-agent (see the socket mount below).
+      - SSH_AUTH_SOCK=/run/host-services/ssh-auth.sock
+      # Extra flags appended to the default `claude` command. Set it per-run to
+      # continue where you left off:  CLAUDE_ARGS=-c docker compose run --rm claude
+      - CLAUDE_ARGS=${CLAUDE_ARGS:-}
+    extra_hosts:
+      # So a kubeconfig context pointing at 127.0.0.1 can be rewritten to
+      # host.docker.internal and still reach a cluster running on the Mac.
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Your project(s): edit this to point at the code you want Claude to work
+      # on. Keep it in sync with the dind service above (or set WORKSPACE_DIR).
+      - ${WORKSPACE_DIR:-./workspace}:/workspace
+      # Persist Claude Code login/config across container rebuilds.
+      - claude-config:/home/claude/.claude
+      # Claude Code settings for the sandbox, versioned in this repo so they
+      # survive `down -v` and can be edited from the host. Mounted read-write:
+      # the CLI persists its own changes (theme, etc.) back into this file.
+      # Deliberately NOT the host's ~/.claude/settings.json — that file names
+      # host-only paths (Homebrew bash, the statusline script, plugins), and
+      # giving the sandbox write access to it would let an agent plant a `hooks`
+      # entry that then executes on the host.
+      - ./claude-settings.json:/home/claude/.claude/settings.json
+
+      # ---- Host home directories ------------------------------------------
+      # SSH keys + config, staged read-only. The entrypoint copies them into
+      # ~/.ssh and strips macOS-only options (UseKeychain, the OrbStack
+      # Include) that make OpenSSH on Linux bail out. Copying rather than
+      # mounting also lets ssh append to known_hosts.
+      - ${HOME}/.ssh:/mnt/host-ssh:ro
+      # Your GitHub key (id_rsa) is passphrase-protected and unlocked from the
+      # macOS Keychain, so the key file alone is useless in Linux. Forward the
+      # host's ssh-agent instead: signing happens on the host, the passphrase
+      # never enters the container. Requires the key to be in the agent:
+      #     ssh-add --apple-load-keychain
+      # (Docker Desktop exposes the host agent at this magic path.)
+      - /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock
+      # kubeconfig. Read-only on purpose — every context here is potentially
+      # production, and ro also stops `kubectl config use-context` from silently
+      # switching what a later command hits.
+      - ${HOME}/.kube:/home/claude/.kube:ro
+      # Maven local repository. Read-write: Maven needs to populate the cache,
+      # and sharing it with the host avoids re-downloading the world.
+      - ${HOME}/.m2:/home/claude/.m2
+      # Git aliases + global ignore, via the XDG config path. Git reads this *in
+      # addition to* ~/.gitconfig, so the container keeps its own writable
+      # ~/.gitconfig (identity, safe.directory) while inheriting your aliases.
+      # Read-only: the agent shouldn't be editing your host git config.
+      - ${HOME}/.config/git:/home/claude/.config/git:ro
+      # Mounting your own tooling (scripts your git aliases shell out to, etc.)
+      # belongs in docker-compose.override.yml — see the .example file.
+    # ---- Sandbox hardening (uncomment to tighten) ---------------------------
+    # Cap resource usage so a runaway task can't exhaust the host.
+    # mem_limit: 4g
+    # cpus: 2.0
+    # pids_limit: 512
+    # Drop privileges and prevent gaining new ones.
+    # security_opt:
+    #   - no-new-privileges:true
+    # Make the root filesystem read-only; the volumes above stay writable.
+    # read_only: true
+    # tmpfs:
+    #   - /tmp
+    # NOTE: `network_mode: none` is no longer possible — the claude container
+    # needs the compose network to reach the dind daemon.
+
+volumes:
+  claude-config:
+  dind-data:
