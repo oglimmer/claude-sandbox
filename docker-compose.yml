@@ -98,6 +98,13 @@ services:
       #     ssh-add --apple-load-keychain
       # (Docker Desktop exposes the host agent at this magic path.)
       - /run/host-services/ssh-auth.sock:/run/host-services/ssh-auth.sock
+      # Statusline script + Config.toml, staged read-only. The entrypoint copies
+      # it into ~/.claude/statusline, because the config parser writes its
+      # compiled cache (.Config.cache.sh) next to Config.toml and would fail on
+      # a read-only mount. Copying also keeps this host-executed script
+      # unwritable from inside the sandbox — same reasoning as settings.json
+      # above: the host runs statusline.sh on every prompt refresh.
+      - ${HOME}/.claude/statusline:/mnt/host-statusline:ro
       # kubeconfig. Read-only on purpose — every context here is potentially
       # production, and ro also stops `kubectl config use-context` from silently
       # switching what a later command hits.

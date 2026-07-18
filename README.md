@@ -165,6 +165,23 @@ These are wired up in `docker-compose.yml` by default:
 | `~/.kube`                    | `~/.kube`                      | ro   | `KUBECACHEDIR` redirects the discovery cache to a writable dir |
 | `~/.m2`                      | `~/.m2`                        | rw   | Shared artifact cache — Maven must be able to write it |
 | `~/.config/git`              | `~/.config/git`                | ro   | Global git aliases and ignore rules |
+| `~/.claude/statusline`       | `/mnt/host-statusline` → `~/.claude/statusline` | ro → copy | Copied in by the entrypoint (see below) |
+
+### Statusline
+
+The host's statusline is shared with the sandbox, so the prompt looks the same
+in both. It is staged read-only and **copied** into `~/.claude/statusline` by
+the entrypoint, for two reasons:
+
+- `statusline.sh` compiles `Config.toml` into a cache file (`.Config.cache.sh`)
+  written *next to* the config, which a read-only mount would break.
+- The host runs this script on every prompt refresh, so the sandbox must not be
+  able to edit it — same reasoning as `settings.json`.
+
+The copy happens on every container start, so host-side `Config.toml` edits
+land after a restart rather than being pinned by the `~/.claude` volume.
+`claude-settings.json` points at it with `/bin/bash` (Linux), not the host's
+Homebrew bash.
 
 ### Machine-specific mounts
 

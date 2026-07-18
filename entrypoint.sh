@@ -37,6 +37,18 @@ mkdir -p "${KUBECACHEDIR:-$HOME/.cache/kube}"
 # script with the usual write-temp-then-`mv` idiom: renaming over a bind-mounted
 # file fails with EBUSY inside the container. Only in-place writes work.
 
+# ---- Statusline -----------------------------------------------------------
+# The host's ~/.claude/statusline is staged read-only at /mnt/host-statusline.
+# Copy it into ~/.claude/statusline (the path statusline.sh hardcodes when it
+# looks for Config.toml) so the config cache it writes next to Config.toml
+# lands on a writable filesystem. Re-copied on every start, so host-side edits
+# to Config.toml show up after a restart rather than being pinned by the
+# ~/.claude volume.
+if [ -d /mnt/host-statusline ]; then
+    mkdir -p "${HOME}/.claude/statusline"
+    cp -a /mnt/host-statusline/. "${HOME}/.claude/statusline/" 2>/dev/null || true
+fi
+
 # ---- SSH ------------------------------------------------------------------
 # The host's ~/.ssh is staged read-only at /mnt/host-ssh. Copy it into ~/.ssh so
 # ssh can write known_hosts, fix up the permissions it insists on, and neutralise

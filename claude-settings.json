@@ -4,7 +4,11 @@
     "commit": "",
     "pr": ""
   },
+  "statusLine": {
+    "type": "command",
+    "command": "/bin/bash ~/.claude/statusline/statusline.sh"
+  },
+  "tui": "fullscreen",
   "skipDangerousModePermissionPrompt": true,
-  "theme": "dark",
-  "tui": "fullscreen"
+  "theme": "dark"
 }
