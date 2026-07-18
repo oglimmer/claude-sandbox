@@ -66,6 +66,15 @@ services:
       # Extra flags appended to the default `claude` command. Set it per-run to
       # continue where you left off:  CLAUDE_ARGS=-c docker compose run --rm claude
       - CLAUDE_ARGS=${CLAUDE_ARGS:-}
+      # Keeps .claude.json (MCP servers added via `claude mcp add`, project
+      # history) inside the ~/.claude volume. Without this it lands in the
+      # container's writable layer at /home/claude/.claude.json — *outside* the
+      # volume — and is discarded on every `run --rm`.
+      - CLAUDE_CONFIG_DIR=/home/claude/.claude
+      # Secrets referenced as ${VAR} from a profile's mcp.json need a
+      # passthrough here to reach the container. Add your own alongside these.
+      - GRAFANA_URL=${GRAFANA_URL:-}
+      - GRAFANA_SERVICE_ACCOUNT_TOKEN=${GRAFANA_SERVICE_ACCOUNT_TOKEN:-}
     extra_hosts:
       # So a kubeconfig context pointing at 127.0.0.1 can be rewritten to
       # host.docker.internal and still reach a cluster running on the Mac.
@@ -74,16 +83,39 @@ services:
       # Your project(s): edit this to point at the code you want Claude to work
       # on. Keep it in sync with the dind service above (or set WORKSPACE_DIR).
       - ${WORKSPACE_DIR:-./workspace}:/workspace
-      # Persist Claude Code login/config across container rebuilds.
-      - claude-config:/home/claude/.claude
-      # Claude Code settings for the sandbox, versioned in this repo so they
-      # survive `down -v` and can be edited from the host. Mounted read-write:
-      # the CLI persists its own changes (theme, etc.) back into this file.
+      # Claude Code's state: login, session history, .claude.json. One directory
+      # per profile — every workspace mounts at /workspace, so sharing this
+      # would make Claude Code treat unrelated repos as the same project and
+      # CLAUDE_ARGS=-c would resume the wrong session.
+      #
+      # A host directory rather than a named volume: compose only interpolates
+      # variables in *values*, not in top-level volume keys, so a per-profile
+      # named volume can't be declared. Being on the host is also easier to
+      # inspect and reset (rm -rf the directory). Gitignored — it holds the
+      # login credential.
+      - ./profile-state/${CLAUDE_PROFILE:-default}:/home/claude/.claude
+
+      # ---- Per-workspace profile ------------------------------------------
+      # Skills / plugins / MCP servers for this workspace, staged read-only. See
+      # profiles/README.md. Both are read-only: the entrypoint copies skills to
+      # a writable path, and mcp.json / plugins are only ever read. Compose
+      # creates the profile dir as root if the name doesn't exist — mkdir it
+      # first.
+      - ./profiles/common:/mnt/profile-common:ro
+      - ./profiles/${CLAUDE_PROFILE:-default}:/mnt/profile:ro
+      # Baseline Claude Code settings, versioned in this repo. Staged read-only
+      # and copied by the entrypoint into each profile's settings.json on first
+      # run — it cannot be mounted at /home/claude/.claude/settings.json,
+      # because that directory is itself a host bind mount and Docker Desktop
+      # refuses to create a nested mountpoint inside one ("mountpoint is outside
+      # of rootfs"). Seeding also means a profile's settings can diverge and
+      # persist, which is what per-workspace profiles want anyway.
+      #
       # Deliberately NOT the host's ~/.claude/settings.json — that file names
       # host-only paths (Homebrew bash, the statusline script, plugins), and
       # giving the sandbox write access to it would let an agent plant a `hooks`
       # entry that then executes on the host.
-      - ./claude-settings.json:/home/claude/.claude/settings.json
+      - ./claude-settings.json:/mnt/claude-settings.json:ro
 
       # ---- Host home directories ------------------------------------------
       # SSH keys + config, staged read-only. The entrypoint copies them into
@@ -135,5 +167,4 @@ services:
     # needs the compose network to reach the dind daemon.
 
 volumes:
-  claude-config:
   dind-data:

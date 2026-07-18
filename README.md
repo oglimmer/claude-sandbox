@@ -12,10 +12,13 @@ rest of your machine.
 | `Dockerfile`         | `node:22-bookworm-slim` + language toolchains + Claude Code CLI      |
 | `docker-compose.yml` | Build + run config, volume mounts, optional hardening               |
 | `entrypoint.sh`      | Seeds git identity, fixes up the ssh config, prepares cache dirs    |
-| `claude-settings.json` | Claude Code settings for the sandbox (mounted read-write)          |
+| `claude-settings.json` | Baseline Claude Code settings, seeded into each profile on first run |
+| `oglimmer.sh`        | Manages profiles and runs the sandbox (`list`, `new`, `run`, `doctor`) |
 | `.env.example`       | Optional `ANTHROPIC_API_KEY`, git identity, `WORKSPACE_DIR`         |
 | `docker-compose.override.yml.example` | Template for machine-specific mounts               |
 | `workspace/`         | The code Claude works on (bind-mounted into the container)          |
+| `profiles/`          | Per-workspace skills, plugins and MCP servers (versioned)           |
+| `profile-state/`     | Per-profile login, session history and `.claude.json` (gitignored)  |
 
 ## Language toolchains
 
@@ -52,8 +55,15 @@ docker compose build --build-arg GO_VERSION=1.24.0 --build-arg JDK_VERSION=17
 docker compose build
 
 # 2. Launch straight into Claude Code (interactive)
-docker compose run --rm claude
+./oglimmer.sh run
 ```
+
+Use the script rather than `docker compose run` directly for the first launch.
+A fresh clone has no `profile-state/default/`, and compose would create that
+bind-mount source as **root** — leaving you logged out of a profile you can't
+write to. `./oglimmer.sh run` creates it as you, and refuses a profile name it
+doesn't recognise instead of silently starting an empty one. Afterwards
+`docker compose run --rm claude` works fine.
 
 The default command is `claude --dangerously-skip-permissions`, so Claude Code
 runs without stopping to ask for approval on each action. **This is only safe
@@ -62,7 +72,8 @@ mounted workspace, runs non-root, and can't escalate. Never use that flag on a
 bare host.
 
 On first launch, run `/login` inside the CLI to authenticate via OAuth. Your
-login is stored in the `claude-config` named volume and survives rebuilds.
+login is stored in `profile-state/<profile>/` on the host and survives rebuilds.
+It is gitignored — that directory holds the credential.
 
 > Use `docker compose run --rm claude` (not `up -d`) — it wires up an
 > interactive terminal for the CLI and removes the container on exit. To get a
@@ -74,37 +85,49 @@ mount at an existing project — see below).
 To stop and clean up:
 
 ```bash
-docker compose down          # stop, keep the config volume
-docker compose down -v       # stop and wipe login/config too
+docker compose down          # stop
+docker compose down -v       # stop and wipe the dind image cache
 ```
+
+Neither touches your login or sessions — those are host directories now. To
+reset a profile (and log it out), delete `profile-state/<profile>/`.
 
 ## Continuing a session
 
-Session transcripts live in `~/.claude/projects/` inside the `claude-config`
-volume, so they outlive any single container. The default command appends
-`$CLAUDE_ARGS`, which is how you pass `-c` without restating the whole thing:
+Session transcripts live in `profile-state/<profile>/projects/`, so they outlive
+any container. Anything after `run` is handed to Claude Code:
 
 ```bash
-CLAUDE_ARGS=-c docker compose run --rm claude       # continue the last session
-CLAUDE_ARGS=--resume docker compose run --rm claude # pick a session from a list
+./oglimmer.sh run -c            # continue the last session in this profile
+./oglimmer.sh run --resume      # pick a session from a list
 ```
 
-Or override the command outright:
+Script options go *before* the command (`./oglimmer.sh -v run -c`); everything
+after `run` belongs to Claude Code.
+
+Without the script it's the `$CLAUDE_ARGS` passthrough that the container's
+default command appends:
+
+```bash
+CLAUDE_ARGS=-c docker compose run --rm claude
+```
+
+`$CLAUDE_ARGS` is word-split on purpose — fine for flags, not for arguments
+containing spaces. For those, override the command outright:
 
 ```bash
 docker compose run --rm claude claude --dangerously-skip-permissions -c
 ```
 
-`$CLAUDE_ARGS` is word-split on purpose — fine for flags, not for arguments
-containing spaces. For those, override the command.
+> Sessions are keyed by working directory, and `working_dir` is always
+> `/workspace`. Per-profile state is what stops that from mattering: give each
+> `WORKSPACE_DIR` its own profile and `-c` resumes that workspace's history. Point
+> two workspaces at one profile and `-c` will happily resume a conversation about
+> the other one.
 
-> **Sessions are keyed by working directory, and `working_dir` is always
-> `/workspace`.** So every project you mount shares one session history under
-> `~/.claude/projects/-workspace/`. After repointing `WORKSPACE_DIR`, `-c` will
-> happily resume a conversation about the *previous* project. Use
-> `--resume` to pick deliberately when you've switched.
-
-`docker compose down -v` wipes the volume and every stored session with it.
+`docker compose down -v` wipes the dind image cache, not your sessions — those
+are host directories now. To reset a profile, delete `profile-state/<profile>/`
+(which also logs it out).
 
 ## Authentication
 
@@ -154,6 +177,76 @@ they must agree (see [Docker in Docker](#docker-in-docker)):
 ```bash
 echo "WORKSPACE_DIR=$HOME/dev/my-project" >> .env
 ```
+
+## Profiles
+
+Each workspace gets its own skills, plugins and MCP servers. `CLAUDE_PROFILE`
+picks which profile directory is mounted, so it travels with `WORKSPACE_DIR`:
+
+```bash
+mkdir -p profiles/my-project/skills profile-state/my-project
+printf 'WORKSPACE_DIR=%s/dev/my-project\nCLAUDE_PROFILE=my-project\n' "$HOME" >> .env
+```
+
+| In the profile | Reaches Claude Code as |
+| -------------- | ---------------------- |
+| `skills/`      | copied into `~/.claude/skills` (after `profiles/common/skills`, so it can shadow by name) |
+| `plugins/`     | `--plugin-dir` |
+| `mcp.json`     | `--mcp-config` |
+| `settings.json`| `--settings`, layered over `claude-settings.json` |
+
+Everything is optional — an empty profile behaves exactly like the sandbox did
+before profiles existed. MCP servers can equally be added from inside with
+`claude mcp add`; those persist in `profile-state/<profile>/`, because
+`CLAUDE_CONFIG_DIR` keeps `.claude.json` there. Configuring from outside via
+`mcp.json` is usually easier to reproduce and review.
+
+Session history and login live in `profile-state/<profile>/` and are therefore
+also per profile. That is deliberate: every workspace mounts at `/workspace`, so
+a shared state directory would make Claude Code treat unrelated repos as one
+project and `CLAUDE_ARGS=-c` would resume the wrong session. A fresh profile
+starts logged out — run `/login` once.
+
+### Managing profiles
+
+`./oglimmer.sh` handles the bookkeeping — creating profiles, editing `mcp.json`,
+and showing what a workspace actually gets:
+
+```bash
+./oglimmer.sh list                      # skills, plugins and MCP for the active profile
+./oglimmer.sh profiles                  # every profile, active one marked
+./oglimmer.sh new my-api                # profile skeleton + state directory
+./oglimmer.sh mcp-add my-api playwright -- npx -y @playwright/mcp@latest
+./oglimmer.sh skill-add common ~/.claude/skills/renovate-config
+./oglimmer.sh doctor                    # find the usual breakages
+```
+
+### Switching profiles
+
+`-p` picks a profile for one command, without touching `.env`:
+
+```bash
+./oglimmer.sh -p my-api run -c      # run my-api, continue its last session
+./oglimmer.sh -p my-api list        # inspect it
+```
+
+For a lasting switch, change `CLAUDE_PROFILE` in `.env` — and repoint
+`WORKSPACE_DIR` with it, since a profile is meant to pair with one workspace.
+`CLAUDE_PROFILE=my-api ./oglimmer.sh run` works too; precedence is `-p` >
+environment > `.env` > `default`, matching what docker compose itself does.
+
+`run` refuses an unknown profile rather than letting compose create the
+directory as root and start you in an empty one.
+
+`doctor` catches what otherwise fails silently: invalid `mcp.json`, `${VAR}`
+references that aren't set in `.env` or lack a passthrough in
+`docker-compose.yml`, root-owned directories compose created, skill directories
+missing a `SKILL.md`, and state directories left behind by deleted profiles.
+
+`--dry-run` and `-v` work throughout. `list` redacts literal secret values and
+flags them, so the output is safe to paste.
+
+Details and the secret-handling rules for `mcp.json`: [profiles/README.md](profiles/README.md).
 
 ## Host home directories
 

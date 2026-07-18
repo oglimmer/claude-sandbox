@@ -32,10 +32,18 @@ git config --global --get --path safe.directory >/dev/null 2>&1 || git config --
 # kubectl's cache dir (KUBECACHEDIR) — ~/.kube itself is read-only.
 mkdir -p "${KUBECACHEDIR:-$HOME/.cache/kube}"
 
-# NOTE: settings.json is bind-mounted from ./claude-settings.json in this repo,
-# so nothing here needs to seed it. Do not be tempted to rewrite it from this
-# script with the usual write-temp-then-`mv` idiom: renaming over a bind-mounted
-# file fails with EBUSY inside the container. Only in-place writes work.
+# ---- Settings --------------------------------------------------------------
+# Seed the profile's settings.json from ./claude-settings.json on first run.
+# It can't be bind-mounted into place: ~/.claude is itself a host bind mount,
+# and Docker Desktop refuses to create a nested mountpoint inside one. Only
+# seeded when absent, so the CLI's own changes (theme, etc.) survive restarts
+# and each profile can diverge. Delete the file to pick up a changed baseline.
+#
+# -s, not -f: a failed nested-mount attempt leaves a 0-byte stub behind, and an
+# empty settings.json is not a setting the user chose.
+if [ -f /mnt/claude-settings.json ] && [ ! -s "${HOME}/.claude/settings.json" ]; then
+    cp /mnt/claude-settings.json "${HOME}/.claude/settings.json"
+fi
 
 # ---- Statusline -----------------------------------------------------------
 # The host's ~/.claude/statusline is staged read-only at /mnt/host-statusline.
@@ -48,6 +56,38 @@ if [ -d /mnt/host-statusline ]; then
     mkdir -p "${HOME}/.claude/statusline"
     cp -a /mnt/host-statusline/. "${HOME}/.claude/statusline/" 2>/dev/null || true
 fi
+
+# ---- Per-workspace profile -------------------------------------------------
+# profiles/common and profiles/$CLAUDE_PROFILE are staged read-only at
+# /mnt/profile-common and /mnt/profile (see profiles/README.md). Everything here
+# is optional: with an empty profile the sandbox behaves as it did before.
+#
+# Skills have to live at ~/.claude/skills for Claude Code to discover them, so
+# they get copied rather than mounted. The tree is rebuilt from scratch on every
+# start — otherwise skills from a previously-selected profile would linger in
+# the volume and silently apply to the wrong workspace. common/ is copied first
+# so a profile can shadow a common skill by using the same name.
+rm -rf "${HOME}/.claude/skills"
+mkdir -p "${HOME}/.claude/skills"
+for _skills in /mnt/profile-common/skills /mnt/profile/skills; do
+    [ -d "${_skills}" ] || continue
+    cp -a "${_skills}/." "${HOME}/.claude/skills/" 2>/dev/null || true
+done
+
+# The rest are passed to the CLI as flags, read directly from the read-only
+# mount. CLAUDE_PROFILE_ARGS is picked up by the CMD in the Dockerfile, ahead of
+# CLAUDE_ARGS so a per-run flag can still override.
+CLAUDE_PROFILE_ARGS=""
+if [ -f /mnt/profile/mcp.json ]; then
+    CLAUDE_PROFILE_ARGS="${CLAUDE_PROFILE_ARGS} --mcp-config /mnt/profile/mcp.json"
+fi
+if [ -d /mnt/profile/plugins ]; then
+    CLAUDE_PROFILE_ARGS="${CLAUDE_PROFILE_ARGS} --plugin-dir /mnt/profile/plugins"
+fi
+if [ -f /mnt/profile/settings.json ]; then
+    CLAUDE_PROFILE_ARGS="${CLAUDE_PROFILE_ARGS} --settings /mnt/profile/settings.json"
+fi
+export CLAUDE_PROFILE_ARGS
 
 # ---- SSH ------------------------------------------------------------------
 # The host's ~/.ssh is staged read-only at /mnt/host-ssh. Copy it into ~/.ssh so

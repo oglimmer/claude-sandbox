@@ -1,0 +1,4 @@
+# Per-profile Claude Code state (login credential, session history,
+# .claude.json). Machine-local, never committed.
+*
+!.gitignore

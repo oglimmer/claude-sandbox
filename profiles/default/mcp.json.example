@@ -1,0 +1,29 @@
+{
+  "$comment": [
+    "Copy to mcp.json in this profile directory to activate. The entrypoint",
+    "passes it to Claude Code with --mcp-config, so it is read straight from",
+    "the host — no need to run `claude mcp add` inside the container.",
+    "",
+    "mcp.json is gitignored: MCP definitions routinely carry tokens. Keep the",
+    "secret itself in .env and reference it as ${VAR} here — Claude Code expands",
+    "environment variables in this file, so nothing sensitive is stored on disk",
+    "in the repo. Add the matching passthrough to docker-compose.yml's",
+    "environment: block so the variable actually reaches the container."
+  ],
+  "mcpServers": {
+    "grafana": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["mcp-grafana"],
+      "env": {
+        "GRAFANA_URL": "${GRAFANA_URL}",
+        "GRAFANA_SERVICE_ACCOUNT_TOKEN": "${GRAFANA_SERVICE_ACCOUNT_TOKEN}"
+      }
+    },
+    "playwright": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@latest"]
+    }
+  }
+}

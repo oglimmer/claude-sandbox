@@ -12,6 +12,10 @@
 # ignore, repeated here so the repo stands on its own).
 .claude/settings.local.json
 
+# MCP server definitions routinely carry tokens. Keep secrets in .env and
+# reference them as ${VAR} from mcp.json; track the .example instead.
+profiles/*/mcp.json
+
 # macOS
 .DS_Store
 
