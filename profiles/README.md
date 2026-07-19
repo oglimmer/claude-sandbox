@@ -20,6 +20,7 @@ profiles/
     plugins/           plugin directories, passed via --plugin-dir
     mcp.json           MCP servers, passed via --mcp-config   (gitignored)
     settings.json      settings overlaid on ../../claude-settings.json
+    CLAUDE.md          extra instructions, appended to the image's own
 ```
 
 ## How each piece is wired
@@ -31,6 +32,7 @@ profiles/
 | `plugins/` | `--plugin-dir`, which loads plugin directories without a marketplace install |
 | `mcp.json` | `--mcp-config` |
 | `settings.json` | `--settings`, layered on the repo-wide `claude-settings.json` |
+| `CLAUDE.md` | Appended to `~/.claude/CLAUDE.md` after the image's `sandbox-CLAUDE.md` (which documents the installed CLI toolkit), rewritten on every start |
 
 Skills are rebuilt from the read-only mounts on every start, so switching
 profiles never leaves another workspace's skills behind, and host-side edits

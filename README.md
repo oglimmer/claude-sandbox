@@ -13,6 +13,7 @@ rest of your machine.
 | `docker-compose.yml` | Build + run config, volume mounts, optional hardening               |
 | `entrypoint.sh`      | Seeds git identity, fixes up the ssh config, prepares cache dirs    |
 | `claude-settings.json` | Baseline Claude Code settings, seeded into each profile on first run |
+| `sandbox-CLAUDE.md`  | Instructions baked into the image, installed as `~/.claude/CLAUDE.md` |
 | `oglimmer.sh`        | Manages profiles and runs the sandbox (`list`, `new`, `run`, `doctor`) |
 | `.env.example`       | Optional `ANTHROPIC_API_KEY`, git identity, default profile         |
 | `docker-compose.override.yml.example` | Template for machine-specific mounts               |
@@ -43,6 +44,34 @@ docker compose build --build-arg GO_VERSION=1.24.0 --build-arg JDK_VERSION=17
 
 `GOPATH` is `$HOME/go`, and `$HOME/go/bin` + the npm global bin dir are on `PATH`
 (in both login and non-login shells).
+
+## Code-aware CLI toolkit
+
+The image also ships the structural tools that beat regex-and-line editing, so the
+agent's habits inside the sandbox match a well-equipped host:
+
+| Area | Tools |
+| ---- | ----- |
+| Search & refactor | `ast-grep`, `comby`, `sd`, `rg` |
+| Diff & review | `difft` (difftastic), `delta` |
+| Data formats | `yq` (mikefarah v4), `jq`, `xmlstarlet` |
+| Validate | `shellcheck`, `yamllint`, `trufflehog`, `pre-commit` |
+| Overview & bench | `scc`, `hyperfine`, `watchexec` |
+
+`sandbox-CLAUDE.md` documents them *to Claude*: the entrypoint installs it as
+`~/.claude/CLAUDE.md` on every start, so the agent knows the tools are there and
+which one to prefer. Because it is rewritten each run, edits made *inside* the
+container do not survive — to add your own instructions, drop a `CLAUDE.md` into
+a profile directory and it is appended after this one (see `profiles/README.md`).
+Changing the baked-in text itself means editing `sandbox-CLAUDE.md` and rebuilding.
+
+One gap: upstream `comby` publishes an x86_64 Linux binary only, so it is absent
+on arm64 images (Apple Silicon). `sandbox-CLAUDE.md` tells the agent to check for
+it and fall back to `ast-grep`/`sd`.
+
+Pinned versions are build args (`SD_VERSION`, `DELTA_VERSION`, `HYPERFINE_VERSION`,
+`WATCHEXEC_VERSION`, `TRUFFLEHOG_VERSION`, `COMBY_VERSION`); the rest track their
+project's latest release at build time.
 
 ## Requirements
 

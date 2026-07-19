@@ -32,7 +32,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         tini \
         zsh \
         maven \
+        xz-utils \
+        shellcheck \
+        xmlstarlet \
     && rm -rf /var/lib/apt/lists/*
+
+# yamllint / pre-commit from PyPI rather than apt: bookworm ships versions old
+# enough that repos pinning `minimum_pre_commit_version` fail. Debian marks the
+# system Python "externally managed"; this image has no other Python consumer,
+# so installing into it directly is fine.
+RUN pip3 install --no-cache-dir --break-system-packages yamllint pre-commit
 
 # ---- Languages: Go + JDK ---------------------------------------------------
 # Node (from the base image) and Python (above) are already present.
@@ -91,6 +100,73 @@ RUN set -eux; \
     chmod 0755 /usr/local/bin/kubectl; \
     kubectl version --client
 
+# ---- Code-aware CLI tools --------------------------------------------------
+# The structural search/diff/validate toolkit the agent is told to prefer over
+# regex-and-line based equivalents (see sandbox-CLAUDE.md, which documents these
+# to Claude). Upstream release binaries — none of these are in Debian, or the
+# Debian versions lag too far to be useful. Versions are pinned where the asset
+# name carries one; the rest use the `latest/download` redirect.
+ARG SD_VERSION=1.1.0
+ARG DELTA_VERSION=0.19.2
+ARG HYPERFINE_VERSION=1.20.0
+ARG WATCHEXEC_VERSION=2.5.1
+ARG TRUFFLEHOG_VERSION=3.95.9
+ARG COMBY_VERSION=1.8.1
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+        amd64) triple=x86_64; scc_arch=x86_64 ;; \
+        arm64) triple=aarch64; scc_arch=arm64 ;; \
+        *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    tmp="$(mktemp -d)"; cd "$tmp"; \
+    dl() { curl -fsSL "$1" -o "$2"; }; \
+    \
+    dl "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_${arch}" /usr/local/bin/yq; \
+    \
+    dl "https://github.com/chmln/sd/releases/download/v${SD_VERSION}/sd-v${SD_VERSION}-${triple}-unknown-linux-musl.tar.gz" sd.tgz; \
+    tar -xzf sd.tgz --strip-components=1 -C /usr/local/bin --wildcards '*/sd'; \
+    \
+    dl "https://github.com/Wilfred/difftastic/releases/latest/download/difft-${triple}-unknown-linux-gnu.tar.gz" difft.tgz; \
+    tar -xzf difft.tgz -C /usr/local/bin difft; \
+    \
+    dl "https://github.com/dandavison/delta/releases/download/${DELTA_VERSION}/delta-${DELTA_VERSION}-${triple}-unknown-linux-gnu.tar.gz" delta.tgz; \
+    tar -xzf delta.tgz --strip-components=1 -C /usr/local/bin --wildcards '*/delta'; \
+    \
+    dl "https://github.com/boyter/scc/releases/latest/download/scc_Linux_${scc_arch}.tar.gz" scc.tgz; \
+    tar -xzf scc.tgz -C /usr/local/bin scc; \
+    \
+    dl "https://github.com/sharkdp/hyperfine/releases/download/v${HYPERFINE_VERSION}/hyperfine-v${HYPERFINE_VERSION}-${triple}-unknown-linux-gnu.tar.gz" hyperfine.tgz; \
+    tar -xzf hyperfine.tgz --strip-components=1 -C /usr/local/bin --wildcards '*/hyperfine'; \
+    \
+    # musl, not gnu: the gnu build links against GLIBC 2.39 and bookworm has 2.36.
+    dl "https://github.com/watchexec/watchexec/releases/download/v${WATCHEXEC_VERSION}/watchexec-${WATCHEXEC_VERSION}-${triple}-unknown-linux-musl.tar.xz" watchexec.txz; \
+    tar -xJf watchexec.txz --strip-components=1 -C /usr/local/bin --wildcards '*/watchexec'; \
+    \
+    dl "https://github.com/trufflesecurity/trufflehog/releases/download/v${TRUFFLEHOG_VERSION}/trufflehog_${TRUFFLEHOG_VERSION}_linux_${arch}.tar.gz" th.tgz; \
+    tar -xzf th.tgz -C /usr/local/bin trufflehog; \
+    \
+    # comby publishes an x86_64 Linux binary only; on arm64 it is simply absent
+    # and sandbox-CLAUDE.md tells the agent to fall back to ast-grep/sd.
+    if [ "$arch" = amd64 ]; then \
+        dl "https://github.com/comby-tools/comby/releases/download/${COMBY_VERSION}/comby-${COMBY_VERSION}-x86_64-linux" /usr/local/bin/comby; \
+    fi; \
+    \
+    cd /; rm -rf "$tmp"; \
+    chmod 0755 /usr/local/bin/yq /usr/local/bin/sd /usr/local/bin/difft \
+               /usr/local/bin/delta /usr/local/bin/scc /usr/local/bin/hyperfine \
+               /usr/local/bin/watchexec /usr/local/bin/trufflehog; \
+    [ "$arch" != amd64 ] || chmod 0755 /usr/local/bin/comby; \
+    yq --version; sd --version; difft --version; delta --version; \
+    scc --version; hyperfine --version; watchexec --version; trufflehog --version
+
+# Documents the toolkit above to Claude. The entrypoint installs it as
+# ~/.claude/CLAUDE.md (the user-level memory file), optionally with a profile's
+# own CLAUDE.md appended. Copied while still root — /opt/sandbox has to be
+# world-readable for the non-root user to read it back out at runtime.
+RUN mkdir -p /opt/sandbox && chmod 0755 /opt/sandbox
+COPY --chmod=0644 sandbox-CLAUDE.md /opt/sandbox/CLAUDE.md
+
 # Login shells (bash -l) re-source /etc/profile and reset PATH, dropping the
 # Docker ENV additions below. Mirror them into a profile.d script so `go` and
 # the user npm bins resolve in interactive login shells too.
@@ -130,7 +206,7 @@ ENV PATH=/home/${USERNAME}/.npm-global/bin:/home/${USERNAME}/go/bin:/home/${USER
 # ---- Claude Code -----------------------------------------------------------
 # Installed as the non-root user into the writable prefix above.
 USER ${USERNAME}
-RUN npm install -g @anthropic-ai/claude-code \
+RUN npm install -g @anthropic-ai/claude-code @ast-grep/cli \
     && npm cache clean --force
 
 # Pre-create the config dir owned by the claude user. A named volume mounted

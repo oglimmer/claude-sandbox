@@ -1,8 +1,8 @@
 class ClaudeSandbox < Formula
   desc "Run Claude Code in a container, one profile per project directory"
   homepage "https://github.com/oglimmer/claude-sandbox"
-  url "https://github.com/oglimmer/claude-sandbox/archive/refs/tags/v1.0.1.tar.gz"
-  sha256 "a75d9c82ce3c09040eb806a7041d47fcdd2e3d46d21c72b33d8bd2251fe6749e"
+  url "https://github.com/oglimmer/claude-sandbox/archive/refs/tags/v1.1.0.tar.gz"
+  sha256 ""
   license "MIT"
 
   # Docker itself is a cask (Docker Desktop / OrbStack), so it can't be a
@@ -15,8 +15,11 @@ class ClaudeSandbox < Formula
     # together and are read-only: the script resolves its own symlink to find
     # them, and keeps everything mutable in ~/.claude-sandbox instead, so a
     # `brew upgrade` never touches a profile or its session history.
+    # sandbox-CLAUDE.md is part of the Docker build context (the Dockerfile
+    # COPYs it), so it has to travel with them or the image build fails.
     libexec.install "docker-compose.yml", "Dockerfile", "entrypoint.sh",
-                    "claude-settings.json", ".env.example", "oglimmer.sh",
+                    "claude-settings.json", "sandbox-CLAUDE.md",
+                    ".env.example", "oglimmer.sh",
                     "docker-compose.override.yml.example"
 
     # Same script, second name. Invoked as `claude-sandbox` it defaults to

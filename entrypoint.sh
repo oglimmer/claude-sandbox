@@ -45,6 +45,24 @@ if [ -f /mnt/claude-settings.json ] && [ ! -s "${HOME}/.claude/settings.json" ];
     cp /mnt/claude-settings.json "${HOME}/.claude/settings.json"
 fi
 
+# ---- User-level CLAUDE.md --------------------------------------------------
+# /opt/sandbox/CLAUDE.md is baked into the image and documents the CLI toolkit
+# it ships (ast-grep, difft, yq, ...) so the agent actually reaches for it.
+# Claude Code only reads user-level memory from ~/.claude/CLAUDE.md, which lives
+# in the per-profile bind mount, so it gets written on every start rather than
+# seeded once — the doc has to track the image, not the volume.
+#
+# A profile can add its own instructions by dropping a CLAUDE.md into its
+# profile dir; it is appended after the image's (see profiles/README.md).
+if [ -f /opt/sandbox/CLAUDE.md ]; then
+    mkdir -p "${HOME}/.claude"
+    cp /opt/sandbox/CLAUDE.md "${HOME}/.claude/CLAUDE.md"
+    if [ -f /mnt/profile/CLAUDE.md ]; then
+        printf '\n' >> "${HOME}/.claude/CLAUDE.md"
+        cat /mnt/profile/CLAUDE.md >> "${HOME}/.claude/CLAUDE.md"
+    fi
+fi
+
 # ---- Statusline -----------------------------------------------------------
 # The host's ~/.claude/statusline is staged read-only at /mnt/host-statusline.
 # Copy it into ~/.claude/statusline (the path statusline.sh hardcodes when it
