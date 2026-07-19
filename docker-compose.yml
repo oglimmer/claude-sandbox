@@ -93,7 +93,12 @@ services:
       # named volume can't be declared. Being on the host is also easier to
       # inspect and reset (rm -rf the directory). Gitignored — it holds the
       # login credential.
-      - ./profile-state/${CLAUDE_PROFILE:-default}:/home/claude/.claude
+      #
+      # SANDBOX_STATE_DIR is absolute and set by the wrapper script: once
+      # installed via Homebrew the compose file lives in the Cellar, which is
+      # read-only and replaced on upgrade, so state can't be relative to it. The
+      # default keeps a plain `docker compose run` in a checkout working.
+      - ${SANDBOX_STATE_DIR:-./profile-state}/${CLAUDE_PROFILE:-default}:/home/claude/.claude
 
       # ---- Per-workspace profile ------------------------------------------
       # Skills / plugins / MCP servers for this workspace, staged read-only. See
@@ -101,8 +106,10 @@ services:
       # a writable path, and mcp.json / plugins are only ever read. Compose
       # creates the profile dir as root if the name doesn't exist — mkdir it
       # first.
-      - ./profiles/common:/mnt/profile-common:ro
-      - ./profiles/${CLAUDE_PROFILE:-default}:/mnt/profile:ro
+      # Absolute via SANDBOX_PROFILES_DIR for the same reason as the state mount
+      # above; the relative default is the checkout's own layout.
+      - ${SANDBOX_PROFILES_DIR:-./profiles}/common:/mnt/profile-common:ro
+      - ${SANDBOX_PROFILES_DIR:-./profiles}/${CLAUDE_PROFILE:-default}:/mnt/profile:ro
       # Baseline Claude Code settings, versioned in this repo. Staged read-only
       # and copied by the entrypoint into each profile's settings.json on first
       # run — it cannot be mounted at /home/claude/.claude/settings.json,

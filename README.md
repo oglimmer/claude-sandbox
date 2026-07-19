@@ -47,8 +47,49 @@ docker compose build --build-arg GO_VERSION=1.24.0 --build-arg JDK_VERSION=17
 ## Requirements
 
 - Docker Engine with the Compose plugin (`docker compose`)
+- `jq`
+
+## Install
+
+```bash
+brew tap oglimmer/claude-sandbox https://github.com/oglimmer/claude-sandbox
+brew install claude-sandbox
+```
+
+That puts `claude-sandbox` on your PATH. The compose file and its build context
+live in the Cellar and are replaced on upgrade; everything you own — profiles,
+their session history, `.env` — lives in `~/.claude-sandbox`, created on first
+run. Point `CLAUDE_SANDBOX_HOME` elsewhere if you'd rather it didn't.
 
 ## Quick start
+
+Type it inside the project you want sandboxed:
+
+```bash
+cd ~/dev/my-api
+claude-sandbox --create    # first time here: makes the profile, then starts
+claude-sandbox             # every time after
+claude-sandbox -c          # continue this project's last session
+```
+
+The profile is named after the directory — `my-api` above — so each repo gets
+its own skills, MCP grants and session history. `claude-sandbox` on a directory
+with no profile stops rather than inventing one, because a mistyped `cd` would
+otherwise quietly sandbox the wrong tree. Use `-p NAME` to run a directory under
+some other profile.
+
+Arguments `claude-sandbox` doesn't recognise go to Claude Code, so put its own
+options first: `claude-sandbox -p my-api -c`.
+
+The management commands are all still there — `claude-sandbox list`,
+`profiles`, `mcp-add`, `skill-add`, `doctor` — and act on the current
+directory's profile unless you name one with `-p`.
+
+## From a checkout
+
+Working on this repo rather than using the installed copy, `./oglimmer.sh` is
+the same script under its original name: it keeps profiles and state inside the
+checkout and defaults to `list` instead of starting a sandbox.
 
 ```bash
 # 1. Build the image
@@ -422,3 +463,7 @@ build args in `docker-compose.yml`.
   `docker compose run -d --name claude-sandbox claude sleep infinity`, then
   `docker exec -it claude-sandbox claude`
 - Rebuild after changing the Dockerfile: `docker compose build --no-cache`
+
+## License
+
+MIT — see [LICENSE](LICENSE).

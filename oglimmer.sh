@@ -10,15 +10,53 @@ set -euo pipefail
 # coding-guidelines/oglimmer-sh.md.
 
 SCRIPT_NAME=$(basename "$0")
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-PROFILES_DIR="$SCRIPT_DIR/profiles"
-STATE_DIR="$SCRIPT_DIR/profile-state"
-ENV_FILE="$SCRIPT_DIR/.env"
+# Installed via Homebrew, bin/claude-sandbox is a symlink into the Cellar, so
+# dirname "$0" is bin/ rather than the directory holding docker-compose.yml.
+# Follow the link chain to find the real one.
+resolve_script_dir() {
+    local src="$0" dir
+    while [[ -L "$src" ]]; do
+        dir="$(cd "$(dirname "$src")" && pwd)"
+        src="$(readlink "$src")"
+        [[ "$src" != /* ]] && src="$dir/$src"
+    done
+    cd "$(dirname "$src")" && pwd
+}
+
+# Where docker-compose.yml, the Dockerfile and claude-settings.json live: the
+# git checkout in development, the Homebrew Cellar once installed. Read-only and
+# replaced wholesale on upgrade, so nothing mutable may live here.
+ASSETS_DIR="$(resolve_script_dir)"
+
+# Where profiles, their state and .env live — the things that must survive a
+# `brew upgrade`. A checkout keeps them alongside the assets (that's the repo
+# layout); an installed copy uses ~/.claude-sandbox, which mirrors it exactly.
+if [[ -n "${CLAUDE_SANDBOX_HOME:-}" ]]; then
+    SANDBOX_HOME="$CLAUDE_SANDBOX_HOME"
+elif [[ -d "$ASSETS_DIR/.git" ]]; then
+    SANDBOX_HOME="$ASSETS_DIR"
+else
+    SANDBOX_HOME="$HOME/.claude-sandbox"
+fi
+
+PROFILES_DIR="$SANDBOX_HOME/profiles"
+STATE_DIR="$SANDBOX_HOME/profile-state"
+ENV_FILE="$SANDBOX_HOME/.env"
+OVERRIDE_FILE="$SANDBOX_HOME/docker-compose.override.yml"
 
 VERBOSE="${VERBOSE:-false}"
 DRY_RUN="${DRY_RUN:-false}"
 HELP=false
+CREATE=false
+
+# Invoked as `claude-sandbox` (the Homebrew entry point) rather than as the repo
+# script: the common case is then "sandbox this directory", so a bare call runs
+# instead of listing, and unrecognized arguments go to Claude Code.
+IMPLIED_RUN=false
+[[ "$SCRIPT_NAME" == "claude-sandbox" ]] && IMPLIED_RUN=true
+
+KNOWN_COMMANDS=(list profiles new workspace mcp-add mcp-rm skill-add skill-rm doctor run help)
 
 COMMAND=""
 PROFILE_OVERRIDE=""
@@ -73,11 +111,38 @@ execute_cmd() {
 }
 
 show_help() {
+    local intro profile_rule examples
+    if [[ "$IMPLIED_RUN" == "true" ]]; then
+        profile_rule="    Highest wins:
+        -p NAME  >  CLAUDE_PROFILE in the environment  >  the current directory
+
+    The directory's own name is the point: one profile per repo, so its skills,
+    MCP grants and session history follow the code they belong to."
+        examples="    cd ~/dev/my-api; ${SCRIPT_NAME} --create   # first time here
+    ${SCRIPT_NAME}                          # start the sandbox for this repo
+    ${SCRIPT_NAME} -c                       # continue its last session
+    ${SCRIPT_NAME} -p other-api             # borrow another profile
+    ${SCRIPT_NAME} list                     # what this repo's profile has"
+        intro="Run Claude Code in a container against the current directory.
+
+With no command, starts the sandbox for the profile named after this directory
+— '$(directory_profile)' here. The profile must exist; create it with --create.
+Anything ${SCRIPT_NAME} doesn't recognize is passed to Claude Code."
+    else
+        profile_rule="    Highest wins, matching what docker compose itself does:
+        -p NAME  >  CLAUDE_PROFILE in the environment  >  .env  >  'default'"
+        examples="    ${SCRIPT_NAME} list                     # the active profile
+    ${SCRIPT_NAME} -p my-api list           # a specific one
+    ${SCRIPT_NAME} -p my-api run -c         # run it, continue its last session
+    ${SCRIPT_NAME} new my-api ~/dev/my-api"
+        intro="Manage per-workspace sandbox profiles — the directory the sandbox works on,
+plus the skills, plugins and MCP servers it gets. See profiles/README.md."
+    fi
+
     cat <<EOF
 ${BOLD}Usage:${RESET} ${SCRIPT_NAME} [OPTIONS] [COMMAND]
 
-Manage per-workspace sandbox profiles — the directory the sandbox works on,
-plus the skills, plugins and MCP servers it gets. See profiles/README.md.
+${intro}
 
 ${BOLD}COMMANDS:${RESET}
     list [PROFILE]              Show skills, plugins and MCP servers (default),
@@ -102,6 +167,8 @@ ${BOLD}COMMANDS:${RESET}
 ${BOLD}OPTIONS:${RESET}
     -p, --profile NAME          Act on this profile instead of the active one
     -w, --workspace DIR         Mount DIR for this run instead of the profile's
+        --create                Create the missing profile for this directory,
+                                then start it
     -v, --verbose               Show the commands being run
         --dry-run               Print what would change without writing
     -h, --help                  Show this help
@@ -111,8 +178,7 @@ ${BOLD}MCP-ADD OPTIONS:${RESET}
         --transport TYPE        Transport for --url servers (default: http)
 
 ${BOLD}WHICH PROFILE:${RESET}
-    Highest wins, matching what docker compose itself does:
-        -p NAME  >  CLAUDE_PROFILE in the environment  >  .env  >  'default'
+${profile_rule}
 
     Options go before the command, since everything after 'run' is handed to
     Claude Code:  ${SCRIPT_NAME} -p my-api run -c
@@ -133,10 +199,7 @@ ${BOLD}WHICH WORKSPACE:${RESET}
     a new profile is usually what you want, or 'run -c' resumes the old one.
 
 ${BOLD}EXAMPLES:${RESET}
-    ${SCRIPT_NAME} list                     # the active profile
-    ${SCRIPT_NAME} -p my-api list           # a specific one
-    ${SCRIPT_NAME} -p my-api run -c         # run it, continue its last session
-    ${SCRIPT_NAME} new my-api ~/dev/my-api
+${examples}
     ${SCRIPT_NAME} workspace my-api         # where does it point?
     ${SCRIPT_NAME} workspace my-api ~/dev/my-api-v2
     ${SCRIPT_NAME} mcp-add my-api playwright -- npx -y @playwright/mcp@latest
@@ -149,8 +212,26 @@ warns when a literal value is passed instead, and redacts literals when listing.
 EOF
 }
 
+is_known_command() {
+    local candidate="$1" known
+    for known in "${KNOWN_COMMANDS[@]}"; do
+        [[ "$candidate" == "$known" ]] && return 0
+    done
+    return 1
+}
+
 parse_args() {
     while [[ $# -gt 0 ]]; do
+        # Under `claude-sandbox`, anything that isn't one of our commands is an
+        # argument for Claude Code — `claude-sandbox -c` continues the session
+        # for this directory, the same way `oglimmer.sh run -c` does. Script
+        # options still come first, so `-p api -c` splits the way it reads.
+        if [[ "$IMPLIED_RUN" == "true" && -z "$COMMAND" && "$1" != -* ]] \
+            && ! is_known_command "$1"; then
+            COMMAND="run"
+            ARGS+=("$@")
+            break
+        fi
         # Everything after `run` belongs to Claude Code, not to this script, so
         # `run -c` continues the last session instead of tripping the unknown
         # option check. Script options go before the command.
@@ -172,6 +253,10 @@ parse_args() {
                 [[ $# -ge 2 ]] || { log_error "--workspace needs a directory"; exit 1; }
                 WORKSPACE_OVERRIDE="$2"
                 shift 2
+                ;;
+            --create)
+                CREATE=true
+                shift
                 ;;
             --dry-run)
                 DRY_RUN=true
@@ -203,6 +288,13 @@ parse_args() {
                 break
                 ;;
             -*)
+                # See the pass-through note at the top of the loop: `-c`, `-r`
+                # and friends are Claude Code's, not ours.
+                if [[ "$IMPLIED_RUN" == "true" && -z "$COMMAND" ]]; then
+                    COMMAND="run"
+                    ARGS+=("$@")
+                    break
+                fi
                 log_error "Unknown option: $1"
                 echo "Run '${SCRIPT_NAME} --help' for usage." >&2
                 exit 1
@@ -226,6 +318,55 @@ check_prerequisites() {
     fi
 }
 
+# Only the commands that actually reach compose need a daemon — listing and
+# editing profiles works fine without one. Checked here rather than left to
+# compose, whose failure ("cannot connect to the Docker daemon") doesn't say
+# that starting Docker Desktop is the fix.
+check_docker() {
+    if ! command -v docker >/dev/null 2>&1; then
+        log_error "docker is required to run the sandbox."
+        log_info "Install Docker Desktop or OrbStack, then try again."
+        exit 1
+    fi
+    if ! docker info >/dev/null 2>&1; then
+        log_error "The Docker daemon isn't reachable — is Docker Desktop running?"
+        exit 1
+    fi
+}
+
+# An installed copy starts with nothing outside the Cellar, so lay out
+# ~/.claude-sandbox the first time it's needed. A checkout already has all of
+# this under version control and is left alone.
+bootstrap_home() {
+    [[ "$SANDBOX_HOME" == "$ASSETS_DIR" ]] && return 0
+    [[ -d "$PROFILES_DIR/common/skills" && -f "$ENV_FILE" ]] && return 0
+
+    log_info "Setting up $SANDBOX_HOME (first run)"
+    execute_cmd mkdir -p "$PROFILES_DIR/common/skills" "$STATE_DIR"
+
+    if [[ ! -f "$ENV_FILE" && "$DRY_RUN" != "true" ]]; then
+        # Seeded from the host's git config so commits made inside the sandbox
+        # are attributed the same way they are outside it. Written in one pass
+        # rather than edited in place — `sed -i` differs between macOS and Linux
+        # and Homebrew runs on both.
+        local name email
+        name=$(git config --global user.name 2>/dev/null || true)
+        email=$(git config --global user.email 2>/dev/null || true)
+        sed -e "s|^GIT_USER_NAME=$|GIT_USER_NAME=$name|" \
+            -e "s|^GIT_USER_EMAIL=$|GIT_USER_EMAIL=$email|" \
+            -e 's|^CLAUDE_PROFILE=default$|# CLAUDE_PROFILE is per directory — claude-sandbox sets it from the directory name.|' \
+            "$ASSETS_DIR/.env.example" >"$ENV_FILE"
+        log_success "Wrote $ENV_FILE — add API keys and MCP secrets there"
+    fi
+}
+
+# The profile name the current directory implies. Compose object names and
+# directory names don't overlap perfectly, so anything outside [A-Za-z0-9._-]
+# becomes a dash — a directory called "my api" gets the profile "my-api".
+directory_profile() {
+    basename "$PWD" | tr -c '[:alnum:]._-' '-' | sed 's/-*$//'
+}
+
 # The profile selected in .env — the one a bare `docker compose run` would use.
 active_profile() {
     # Same precedence docker compose uses, so the script never reports a
@@ -237,6 +378,13 @@ active_profile() {
     fi
     if [[ -n "${CLAUDE_PROFILE:-}" ]]; then
         echo "$CLAUDE_PROFILE"
+        return 0
+    fi
+    # `claude-sandbox` is meant to be typed inside a project, so the directory
+    # names the profile — ahead of .env, whose CLAUDE_PROFILE is the checkout's
+    # own default and has nothing to do with where you're standing.
+    if [[ "$IMPLIED_RUN" == "true" ]]; then
+        directory_profile
         return 0
     fi
     local profile=""
@@ -277,7 +425,7 @@ workspace_abs() {
     case "$dir" in
         /*) echo "$dir" ;;
         "") echo "" ;;
-        *)  echo "$SCRIPT_DIR/${dir#./}" ;;
+        *)  echo "$ASSETS_DIR/${dir#./}" ;;
     esac
 }
 
@@ -381,7 +529,7 @@ env_var_status() {
     name="${name#\{}"
     name="${name%\}}"
     if [[ -f "$ENV_FILE" ]] && grep -qE "^[[:space:]]*${name}=.+" "$ENV_FILE"; then
-        if grep -qE "^[[:space:]]*-[[:space:]]*${name}=" "$SCRIPT_DIR/docker-compose.yml"; then
+        if grep -qE "^[[:space:]]*-[[:space:]]*${name}=" "/docker-compose.yml"; then
             echo "ok"
         else
             echo "no-passthrough"
@@ -975,9 +1123,25 @@ cmd_doctor() {
     echo
 }
 
+# `--create`: the profile for the directory you're standing in. Same result as
+# `new PROFILE DIR`, with both arguments taken from where you are.
+create_profile_here() {
+    local profile="$1" workspace
+    workspace=$(normalize_workspace "${WORKSPACE_OVERRIDE:-$PWD}")
+    warn_workspace_shared "$workspace"
+
+    execute_cmd mkdir -p "$PROFILES_DIR/$profile/skills"
+    # Pre-create the state directory: compose would otherwise create it as root,
+    # which is the usual cause of a profile that silently does nothing.
+    execute_cmd mkdir -p "$STATE_DIR/$profile"
+    write_workspace "$profile" "$workspace"
+    log_success "Created profile '$profile' for $workspace"
+}
+
 cmd_run() {
     local profile
     profile=$(active_profile)
+    [[ "$DRY_RUN" == "true" ]] || check_docker
 
     # Flags after `run` win over an inherited CLAUDE_ARGS; compose passes the
     # variable through and the container's CMD word-splits it onto `claude`.
@@ -986,9 +1150,28 @@ cmd_run() {
         claude_args="${ARGS[*]}"
     fi
 
-    # Catch a typo before compose does: it would create the missing directory
-    # as root and start a sandbox with an empty profile.
-    require_profile_dir "$profile"
+    # A profile is never created implicitly: the name comes from a directory
+    # name, so a typo'd `cd` would otherwise silently sandbox the wrong tree
+    # under a brand-new profile. Creating one is an explicit --create.
+    if [[ ! -d "$PROFILES_DIR/$profile" ]]; then
+        if [[ "$CREATE" != "true" ]]; then
+            if [[ -n "$PROFILE_OVERRIDE" ]]; then
+                log_error "No such profile: $profile"
+            else
+                log_error "No profile for this directory: $profile"
+            fi
+            if [[ "$IMPLIED_RUN" == "true" ]]; then
+                log_info "Create it with:  ${SCRIPT_NAME} --create"
+                log_info "Or use another:  ${SCRIPT_NAME} -p NAME"
+            else
+                log_info "Create it with: ${SCRIPT_NAME} new $profile DIR"
+            fi
+            exit 1
+        fi
+        create_profile_here "$profile"
+    elif [[ "$CREATE" == "true" ]]; then
+        log_info "Profile '$profile' already exists — starting it"
+    fi
 
     # The profile itself is valid, so a missing state directory is just a first
     # run (a fresh clone has none — profile-state/ is gitignored). Create it as
@@ -1022,8 +1205,31 @@ cmd_run() {
     # an array so a path with spaces survives.
     local env_args=(CLAUDE_PROFILE="$profile" CLAUDE_ARGS="$claude_args")
     [[ -n "$workspace" ]] && env_args+=(WORKSPACE_DIR="$workspace")
+    # Absolute, because profiles and state live in ~/.claude-sandbox while the
+    # compose file is in the Cellar — the relative defaults in docker-compose.yml
+    # would resolve against the latter.
+    env_args+=(SANDBOX_PROFILES_DIR="$PROFILES_DIR" SANDBOX_STATE_DIR="$STATE_DIR")
 
-    execute_cmd env "${env_args[@]}" docker compose run --rm claude
+    # `claude-sandbox` is typed from inside a project, so compose is pointed at
+    # its files explicitly rather than picking them up from the shell's cwd.
+    # --project-directory keeps the build context and ./claude-settings.json
+    # resolving next to the compose file.
+    #
+    # -p pins the project name, which compose otherwise derives from that
+    # directory's name: in the Cellar that's the version, so every `brew upgrade`
+    # would strand the dind image cache in a volume named after the old one.
+    local compose_args=(
+        -p claude-sandbox
+        --project-directory "$ASSETS_DIR"
+        -f "$ASSETS_DIR/docker-compose.yml"
+    )
+    # Naming any -f disables compose's auto-load of docker-compose.override.yml,
+    # so the user's own has to be listed explicitly. It sits in $SANDBOX_HOME,
+    # which is the checkout itself in development — the same file either way.
+    [[ -f "$OVERRIDE_FILE" ]] && compose_args+=(-f "$OVERRIDE_FILE")
+    [[ -f "$ENV_FILE" ]] && compose_args+=(--env-file "$ENV_FILE")
+
+    execute_cmd env "${env_args[@]}" docker compose "${compose_args[@]}" run --rm claude
 }
 
 main() {
@@ -1035,8 +1241,14 @@ main() {
     fi
 
     check_prerequisites
+    bootstrap_home
 
-    case "${COMMAND:-list}" in
+    # Typed as `claude-sandbox` inside a project, the bare command means "start
+    # the sandbox here"; as the repo script it stays a read-only overview.
+    local default_command="list"
+    [[ "$IMPLIED_RUN" == "true" ]] && default_command="run"
+
+    case "${COMMAND:-$default_command}" in
         list)      cmd_list ;;
         profiles)  cmd_profiles ;;
         new)       cmd_new ;;
