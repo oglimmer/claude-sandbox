@@ -122,7 +122,13 @@ services:
       # host-only paths (Homebrew bash, the statusline script, plugins), and
       # giving the sandbox write access to it would let an agent plant a `hooks`
       # entry that then executes on the host.
-      - ./claude-settings.json:/mnt/claude-settings.json:ro
+      #
+      # Via SANDBOX_SETTINGS rather than straight from the compose file's own
+      # directory: installed, that directory is under /opt/homebrew, which
+      # Docker Desktop doesn't share by default — the mount is denied outright.
+      # The wrapper seeds a copy into ~/.claude-sandbox, which is shared, and
+      # which also makes the baseline yours to edit.
+      - ${SANDBOX_SETTINGS:-./claude-settings.json}:/mnt/claude-settings.json:ro
 
       # ---- Host home directories ------------------------------------------
       # SSH keys + config, staged read-only. The entrypoint copies them into

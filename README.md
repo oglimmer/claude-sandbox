@@ -53,13 +53,28 @@ docker compose build --build-arg GO_VERSION=1.24.0 --build-arg JDK_VERSION=17
 
 ```bash
 brew tap oglimmer/claude-sandbox https://github.com/oglimmer/claude-sandbox
+brew trust oglimmer/claude-sandbox
 brew install claude-sandbox
 ```
 
+Recent Homebrew refuses to load a formula from a third-party tap until you
+trust it — without the middle line, `install` stops and tells you so.
+
 That puts `claude-sandbox` on your PATH. The compose file and its build context
-live in the Cellar and are replaced on upgrade; everything you own — profiles,
-their session history, `.env` — lives in `~/.claude-sandbox`, created on first
-run. Point `CLAUDE_SANDBOX_HOME` elsewhere if you'd rather it didn't.
+live in the Cellar and are replaced on upgrade; everything you own lives in
+`~/.claude-sandbox`, created on first run and left alone by upgrades:
+
+| | |
+|---|---|
+| `profiles/` | one per project: skills, plugins, `mcp.json` |
+| `profile-state/` | the login and session history for each |
+| `.env` | API keys, git identity, MCP secrets |
+| `claude-settings.json` | the baseline Claude Code settings each profile is seeded from |
+| `docker-compose.override.yml` | your own mounts, if you add any |
+
+Point `CLAUDE_SANDBOX_HOME` elsewhere if you'd rather it didn't live there.
+`~` matters: Docker Desktop shares your home directory but not `/opt/homebrew`,
+so these can't be mounted out of the Cellar even though they ship with it.
 
 ## Quick start
 

@@ -44,6 +44,7 @@ PROFILES_DIR="$SANDBOX_HOME/profiles"
 STATE_DIR="$SANDBOX_HOME/profile-state"
 ENV_FILE="$SANDBOX_HOME/.env"
 OVERRIDE_FILE="$SANDBOX_HOME/docker-compose.override.yml"
+SETTINGS_FILE="$SANDBOX_HOME/claude-settings.json"
 
 VERBOSE="${VERBOSE:-false}"
 DRY_RUN="${DRY_RUN:-false}"
@@ -339,10 +340,17 @@ check_docker() {
 # this under version control and is left alone.
 bootstrap_home() {
     [[ "$SANDBOX_HOME" == "$ASSETS_DIR" ]] && return 0
-    [[ -d "$PROFILES_DIR/common/skills" && -f "$ENV_FILE" ]] && return 0
+    [[ -d "$PROFILES_DIR/common/skills" && -f "$ENV_FILE" && -f "$SETTINGS_FILE" ]] && return 0
 
     log_info "Setting up $SANDBOX_HOME (first run)"
     execute_cmd mkdir -p "$PROFILES_DIR/common/skills" "$STATE_DIR"
+
+    # A copy rather than a mount of the installed one: /opt/homebrew isn't a
+    # shared path in Docker Desktop, so the Cellar's copy can't be bind-mounted.
+    # Yours to edit afterwards — an upgrade won't overwrite it.
+    if [[ ! -f "$SETTINGS_FILE" ]]; then
+        execute_cmd cp "$ASSETS_DIR/claude-settings.json" "$SETTINGS_FILE"
+    fi
 
     if [[ ! -f "$ENV_FILE" && "$DRY_RUN" != "true" ]]; then
         # Seeded from the host's git config so commits made inside the sandbox
@@ -1208,7 +1216,11 @@ cmd_run() {
     # Absolute, because profiles and state live in ~/.claude-sandbox while the
     # compose file is in the Cellar — the relative defaults in docker-compose.yml
     # would resolve against the latter.
-    env_args+=(SANDBOX_PROFILES_DIR="$PROFILES_DIR" SANDBOX_STATE_DIR="$STATE_DIR")
+    env_args+=(
+        SANDBOX_PROFILES_DIR="$PROFILES_DIR"
+        SANDBOX_STATE_DIR="$STATE_DIR"
+        SANDBOX_SETTINGS="$SETTINGS_FILE"
+    )
 
     # `claude-sandbox` is typed from inside a project, so compose is pointed at
     # its files explicitly rather than picking them up from the shell's cwd.
