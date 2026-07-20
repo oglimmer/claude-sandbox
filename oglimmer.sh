@@ -57,7 +57,7 @@ CREATE=false
 IMPLIED_RUN=false
 [[ "$SCRIPT_NAME" == "claude-sandbox" ]] && IMPLIED_RUN=true
 
-KNOWN_COMMANDS=(list profiles new workspace mcp-add mcp-rm skill-add skill-rm doctor run help)
+KNOWN_COMMANDS=(list profiles new workspace mcp-add mcp-rm skill-add skill-rm doctor run rebuild help)
 
 COMMAND=""
 PROFILE_OVERRIDE=""
@@ -164,6 +164,9 @@ ${BOLD}COMMANDS:${RESET}
     run [CLAUDE ARGS...]        Start the sandbox with the active profile;
                                 anything after 'run' is passed to Claude Code
                                 (e.g. 'run -c' to continue the last session)
+    rebuild [--no-cache]        Rebuild the sandbox image — run this after a
+                                'brew upgrade', which refreshes the Dockerfile
+                                but not the built image ('--pull' also allowed)
 
 ${BOLD}OPTIONS:${RESET}
     -p, --profile NAME          Act on this profile instead of the active one
@@ -235,8 +238,9 @@ parse_args() {
         fi
         # Everything after `run` belongs to Claude Code, not to this script, so
         # `run -c` continues the last session instead of tripping the unknown
-        # option check. Script options go before the command.
-        if [[ "$COMMAND" == "run" ]]; then
+        # option check. Script options go before the command. `rebuild` collects
+        # its own flags (--no-cache/--pull) the same way, validated in cmd_rebuild.
+        if [[ "$COMMAND" == "run" || "$COMMAND" == "rebuild" ]]; then
             ARGS+=("$@")
             break
         fi
@@ -1277,6 +1281,12 @@ cmd_run() {
     resolve_forge_tokens
     [[ ${#FORGE_ENV[@]} -gt 0 ]] && env_args+=("${FORGE_ENV[@]}")
 
+    build_compose_args
+    execute_cmd env "${env_args[@]}" docker compose "${COMPOSE_ARGS[@]}" run --rm claude
+}
+
+# The compose flags shared by `run` and `rebuild`, populated into COMPOSE_ARGS.
+build_compose_args() {
     # `claude-sandbox` is typed from inside a project, so compose is pointed at
     # its files explicitly rather than picking them up from the shell's cwd.
     # --project-directory keeps the build context and ./claude-settings.json
@@ -1285,7 +1295,7 @@ cmd_run() {
     # -p pins the project name, which compose otherwise derives from that
     # directory's name: in the Cellar that's the version, so every `brew upgrade`
     # would strand the dind image cache in a volume named after the old one.
-    local compose_args=(
+    COMPOSE_ARGS=(
         -p claude-sandbox
         --project-directory "$ASSETS_DIR"
         -f "$ASSETS_DIR/docker-compose.yml"
@@ -1293,10 +1303,36 @@ cmd_run() {
     # Naming any -f disables compose's auto-load of docker-compose.override.yml,
     # so the user's own has to be listed explicitly. It sits in $SANDBOX_HOME,
     # which is the checkout itself in development — the same file either way.
-    [[ -f "$OVERRIDE_FILE" ]] && compose_args+=(-f "$OVERRIDE_FILE")
-    [[ -f "$ENV_FILE" ]] && compose_args+=(--env-file "$ENV_FILE")
+    [[ -f "$OVERRIDE_FILE" ]] && COMPOSE_ARGS+=(-f "$OVERRIDE_FILE")
+    [[ -f "$ENV_FILE" ]] && COMPOSE_ARGS+=(--env-file "$ENV_FILE")
+}
 
-    execute_cmd env "${env_args[@]}" docker compose "${compose_args[@]}" run --rm claude
+# `brew upgrade` refreshes the Dockerfile but not the built image, and
+# `docker compose run` only builds when the image is *missing* — so a changed
+# Dockerfile (a new tool, a version bump) is otherwise invisible until the image
+# is rebuilt by hand. This does that in one step. Pass --no-cache to force every
+# layer to rebuild (e.g. to pull the latest of a `latest/download` tool).
+cmd_rebuild() {
+    [[ "$DRY_RUN" == "true" ]] || check_docker
+
+    local build_flags=()
+    local a
+    for a in "${ARGS[@]:-}"; do
+        case "$a" in
+            "") ;;
+            --no-cache|--pull) build_flags+=("$a") ;;
+            *) log_error "Unknown rebuild option: $a"; exit 1 ;;
+        esac
+    done
+
+    build_compose_args
+    log_info "Rebuilding the sandbox image (claude-sandbox:latest)"
+    if [[ ${#build_flags[@]} -gt 0 ]]; then
+        execute_cmd docker compose "${COMPOSE_ARGS[@]}" build "${build_flags[@]}" claude
+    else
+        execute_cmd docker compose "${COMPOSE_ARGS[@]}" build claude
+    fi
+    log_success "Image rebuilt — the next 'claude-sandbox' run uses it"
 }
 
 main() {
@@ -1326,6 +1362,7 @@ main() {
         skill-rm)  cmd_skill_rm ;;
         doctor)    cmd_doctor ;;
         run)       cmd_run ;;
+        rebuild)   cmd_rebuild ;;
         *)
             log_error "Unknown command: $COMMAND"
             echo "Run '${SCRIPT_NAME} --help' for usage." >&2

@@ -14,7 +14,7 @@ rest of your machine.
 | `entrypoint.sh`      | Seeds git identity, fixes up the ssh config, prepares cache dirs    |
 | `claude-settings.json` | Baseline Claude Code settings, seeded into each profile on first run |
 | `sandbox-CLAUDE.md`  | Instructions baked into the image, installed as `~/.claude/CLAUDE.md` |
-| `oglimmer.sh`        | Manages profiles and runs the sandbox (`list`, `new`, `run`, `doctor`) |
+| `oglimmer.sh`        | Manages profiles and runs the sandbox (`list`, `new`, `run`, `rebuild`, `doctor`) |
 | `.env.example`       | Optional `ANTHROPIC_API_KEY`, git identity, default profile         |
 | `docker-compose.override.yml.example` | Template for machine-specific mounts               |
 | `workspace/`         | The code Claude works on (bind-mounted into the container)          |
@@ -306,7 +306,13 @@ and showing what a workspace actually gets:
 ./oglimmer.sh mcp-add my-api playwright -- npx -y @playwright/mcp@latest
 ./oglimmer.sh skill-add common ~/.claude/skills/renovate-config
 ./oglimmer.sh doctor                    # find the usual breakages
+./oglimmer.sh rebuild                   # rebuild the image after a brew upgrade
 ```
+
+> **After a `brew upgrade`**, run `claude-sandbox rebuild`. The upgrade refreshes
+> the Dockerfile and wrapper, but `docker compose run` only builds the image when
+> it's *missing* — so a changed Dockerfile (a new tool, a version bump) stays
+> invisible until you rebuild. Add `--no-cache` to force every layer.
 
 ### Switching profiles
 
@@ -537,7 +543,8 @@ build args in `docker-compose.yml`.
 - Run a long-lived container you can exec into repeatedly:
   `docker compose run -d --name claude-sandbox claude sleep infinity`, then
   `docker exec -it claude-sandbox claude`
-- Rebuild after changing the Dockerfile: `docker compose build --no-cache`
+- Rebuild after changing the Dockerfile (or a `brew upgrade`):
+  `claude-sandbox rebuild` (add `--no-cache` to force every layer)
 
 ## License
 
