@@ -42,6 +42,19 @@ regex/line-based equivalents — they understand syntax, so they're more reliabl
 - **hyperfine** — statistical command benchmarking. Use to back up perf claims: `hyperfine 'cmd a' 'cmd b' --export-markdown bench.md`.
 - **watchexec** — run a command on file changes for feedback loops: `watchexec -e py -- pytest`, `watchexec -r -- ./server`.
 
+## Forge CLIs — gh / glab (authenticated as the host user)
+- **gh** (GitHub) and **glab** (GitLab) are logged in with the host's own token, forwarded from
+  outside the sandbox — so they act **as you**, against real repos, issues, PRs/MRs and CI. The
+  token is a personal credential; treat these like the kubectl note below.
+- Read-only commands are fine: `gh pr list`, `gh pr view`, `gh run view`, `gh api ...` (GET),
+  `glab mr list`, `glab ci view`, etc.
+- **Confirm with me before anything that writes or is outward-facing**: opening/merging/closing
+  PRs or MRs, pushing review comments, editing issues, `gh release`, `gh secret`, `gh api` with
+  `-X POST/PATCH/PUT/DELETE`, `glab mr merge`, re-running or cancelling CI. These are visible to
+  other people the moment they land.
+- `command -v glab` first if a task might not need it — GitLab auth is only present when the host
+  had a GitLab token to forward; on a GitHub-only host `glab` is installed but logged out.
+
 ## kubectl — production access (handle with care)
 `kubectl` reaches live clusters that run production — the host's kubeconfig is mounted into this
 sandbox read-only, so the container isolation does **not** protect the cluster. Configured contexts

@@ -1146,6 +1146,58 @@ create_profile_here() {
     log_success "Created profile '$profile' for $workspace"
 }
 
+# Whether $ENV_FILE assigns KEY a non-empty value. Lets an explicit .env entry
+# (e.g. an enterprise token) win over the host auto-resolution below, which is
+# skipped when the user has pinned the token themselves.
+env_file_has() {
+    [[ -f "$ENV_FILE" ]] || return 1
+    grep -Eq "^[[:space:]]*$1=[^[:space:]]" "$ENV_FILE"
+}
+
+# Carry the host's GitHub / GitLab CLI auth into the sandbox. gh on macOS keeps
+# its token in the Keychain, so mounting ~/.config/gh wouldn't bring it along;
+# instead resolve the token from the host's own gh/glab (which reads it back out
+# wherever it lives) and hand it to the container as GH_TOKEN / GITLAB_TOKEN —
+# the env vars both CLIs read for non-interactive auth (see docker-compose.yml).
+#
+# Appends `VAR=value` pairs to the FORGE_ENV array for the caller to pass on to
+# compose. Skipped for a token already set in the shell or pinned in .env, so a
+# manual override wins. Silent when a CLI is absent or logged out on the host —
+# the sandbox just starts with that forge logged out.
+resolve_forge_tokens() {
+    FORGE_ENV=()
+
+    if [[ -z "${GH_TOKEN:-}" ]] && ! env_file_has GH_TOKEN && command -v gh >/dev/null 2>&1; then
+        local tok
+        if [[ -n "${GH_HOST:-}" ]]; then
+            tok=$(gh auth token --hostname "$GH_HOST" 2>/dev/null || true)
+        else
+            tok=$(gh auth token 2>/dev/null || true)
+        fi
+        if [[ -n "$tok" ]]; then
+            FORGE_ENV+=(GH_TOKEN="$tok")
+            log_verbose "gh: forwarding host auth token${GH_HOST:+ for $GH_HOST}"
+        fi
+    fi
+
+    if [[ -z "${GITLAB_TOKEN:-}" ]] && ! env_file_has GITLAB_TOKEN; then
+        local host="${GITLAB_HOST:-gitlab.com}" tok=""
+        # Prefer glab itself; fall back to its plaintext config (glab need not be
+        # installed on the host for its token to be forwardable).
+        if command -v glab >/dev/null 2>&1; then
+            tok=$(glab auth token --hostname "$host" 2>/dev/null || true)
+        fi
+        if [[ -z "$tok" ]] && command -v yq >/dev/null 2>&1; then
+            local cfg="${XDG_CONFIG_HOME:-$HOME/.config}/glab-cli/config.yml"
+            [[ -f "$cfg" ]] && tok=$(yq ".hosts.\"$host\".token // \"\"" "$cfg" 2>/dev/null || true)
+        fi
+        if [[ -n "$tok" ]]; then
+            FORGE_ENV+=(GITLAB_TOKEN="$tok")
+            log_verbose "glab: forwarding host auth token for $host"
+        fi
+    fi
+}
+
 cmd_run() {
     local profile
     profile=$(active_profile)
@@ -1221,6 +1273,9 @@ cmd_run() {
         SANDBOX_STATE_DIR="$STATE_DIR"
         SANDBOX_SETTINGS="$SETTINGS_FILE"
     )
+    # gh / glab auth, resolved from the host so both CLIs start logged in.
+    resolve_forge_tokens
+    [[ ${#FORGE_ENV[@]} -gt 0 ]] && env_args+=("${FORGE_ENV[@]}")
 
     # `claude-sandbox` is typed from inside a project, so compose is pointed at
     # its files explicitly rather than picking them up from the shell's cwd.

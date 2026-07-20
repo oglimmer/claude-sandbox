@@ -100,6 +100,44 @@ RUN set -eux; \
     chmod 0755 /usr/local/bin/kubectl; \
     kubectl version --client
 
+# ---- GitHub CLI (gh) + GitLab CLI (glab) -----------------------------------
+# Both authenticate non-interactively from an env var the wrapper injects from
+# the host — gh reads GH_TOKEN, glab reads GITLAB_TOKEN (see oglimmer.sh and the
+# environment: block in docker-compose.yml). No host config dir is mounted: on
+# macOS gh keeps its token in the Keychain, so ~/.config/gh carries no token to
+# copy — the resolved token is the only thing that reliably crosses over.
+#
+# gh has an official multi-arch apt repo (stays current within the pinned
+# distro), same pattern as Docker/Adoptium above.
+RUN set -eux; \
+    mkdir -p /etc/apt/keyrings; \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
+    chmod 0644 /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+        > /etc/apt/sources.list.d/github-cli.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends gh; \
+    rm -rf /var/lib/apt/lists/*; \
+    gh --version
+
+# glab has no apt repo — pull its release tarball (multi-arch; ships bin/glab).
+ARG GLAB_VERSION=1.108.0
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+        amd64) glab_arch=amd64 ;; \
+        arm64) glab_arch=arm64 ;; \
+        *) echo "unsupported arch: $arch" >&2; exit 1 ;; \
+    esac; \
+    tmp="$(mktemp -d)"; \
+    curl -fsSL "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downloads/glab_${GLAB_VERSION}_linux_${glab_arch}.tar.gz" \
+        -o "$tmp/glab.tgz"; \
+    tar -xzf "$tmp/glab.tgz" -C "$tmp" bin/glab; \
+    install -m 0755 "$tmp/bin/glab" /usr/local/bin/glab; \
+    rm -rf "$tmp"; \
+    glab --version
+
 # ---- Code-aware CLI tools --------------------------------------------------
 # The structural search/diff/validate toolkit the agent is told to prefer over
 # regex-and-line based equivalents (see sandbox-CLAUDE.md, which documents these

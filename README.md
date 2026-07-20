@@ -34,7 +34,9 @@ The image bundles four language runtimes so Claude can build/test polyglot proje
 | Maven    | 3.8.7          | Debian bookworm                     |
 
 Plus the CLIs the mounts below need: `docker` (+ buildx/compose plugins),
-`kubectl`, and `zsh` (host helper scripts often carry a zsh shebang).
+`kubectl`, `gh` / `glab` (GitHub / GitLab, authenticated from the host — see
+[GitHub / GitLab CLIs](#github--gitlab-clis-gh--glab)), and `zsh` (host helper
+scripts often carry a zsh shebang).
 
 Override the pinned versions at build time, e.g.:
 
@@ -449,6 +451,35 @@ as-is. A context pointing at `127.0.0.1` (a cluster running on the Mac
 itself) needs
 rewriting to `host.docker.internal` — that hostname is mapped for you via
 `extra_hosts`.
+
+### GitHub / GitLab CLIs (`gh` / `glab`)
+
+Both CLIs are installed in the image and **log in as the host user** with no
+setup: the wrapper resolves the token from your host's own `gh` / `glab` at run
+time and forwards it as `GH_TOKEN` / `GITLAB_TOKEN` (the env vars each CLI reads
+for non-interactive auth). Inside the sandbox, `gh pr list`, `glab mr list`,
+`gh api`, etc. just work.
+
+Why forward the *token* rather than mount `~/.config/gh`? On macOS `gh` stores
+its token in the **Keychain**, so the config directory carries no token to copy
+— `gh auth token` reads it back out wherever it lives, which is the only thing
+that reliably crosses into the container. Nothing is written to disk on the
+host, and the token is only present for the lifetime of the `run --rm`.
+
+The forwarded token acts as you against real repos, so the sandbox's
+`CLAUDE.md` tells the agent to confirm before any write (opening/merging PRs and
+MRs, editing issues, releases, secrets, re-running CI) — same posture as the
+kubeconfig above.
+
+Overrides, only if you need them, in `.env`:
+
+| Variable | When to set it |
+| -------- | -------------- |
+| `GH_TOKEN` / `GITLAB_TOKEN` | Use a scoped token instead of your personal host login. A value here wins over the auto-resolved one. |
+| `GH_HOST` / `GITLAB_HOST` | A self-hosted instance (defaults are `github.com` / `gitlab.com`). For GitLab this also selects which host's token is read from the host config. |
+
+If a host has no GitLab auth, `glab` is still installed but starts logged out —
+`command -v glab` succeeds, `glab auth status` shows no token.
 
 ## Docker in Docker
 
