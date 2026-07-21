@@ -134,4 +134,28 @@ if [ -d /mnt/host-ssh ]; then
     fi
 fi
 
+# ---- GitLab CLI (glab) auth ------------------------------------------------
+# The wrapper stages the host's glab config at ~/.claude/.glab-seed (the only
+# writable host mount) whenever the host is logged in and no manual GITLAB_TOKEN
+# override is in play. Copy it into glab's real config dir so the container is
+# logged in — and, crucially, can refresh an expired OAuth2 access token from
+# the stored refresh token itself, the way the host does. A container-local copy
+# (not the mount) keeps those refreshes inside the sandbox; the host config is
+# never rewritten, and the copy resets on the next run.
+#
+# compose always passes GITLAB_TOKEN (empty when the wrapper forwarded no
+# override). glab would treat an empty value as a real, blank token and skip the
+# config, so drop it here and let the seeded config win. A non-empty value is a
+# deliberate override and is left untouched.
+if [ -z "${GITLAB_TOKEN:-}" ]; then
+    unset GITLAB_TOKEN
+fi
+if [ -f "${HOME}/.claude/.glab-seed/config.yml" ]; then
+    _glab_cfg="${GLAB_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/glab-cli}"
+    mkdir -p "${_glab_cfg}"
+    cp "${HOME}/.claude/.glab-seed/config.yml" "${_glab_cfg}/config.yml"
+    chmod 700 "${_glab_cfg}"
+    chmod 600 "${_glab_cfg}/config.yml"
+fi
+
 exec "$@"

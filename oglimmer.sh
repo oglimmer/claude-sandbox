@@ -1158,17 +1158,74 @@ env_file_has() {
     grep -Eq "^[[:space:]]*$1=[^[:space:]]" "$ENV_FILE"
 }
 
-# Carry the host's GitHub / GitLab CLI auth into the sandbox. gh on macOS keeps
-# its token in the Keychain, so mounting ~/.config/gh wouldn't bring it along;
-# instead resolve the token from the host's own gh/glab (which reads it back out
-# wherever it lives) and hand it to the container as GH_TOKEN / GITLAB_TOKEN —
-# the env vars both CLIs read for non-interactive auth (see docker-compose.yml).
+# The host's glab config file, wherever this OS keeps it. macOS uses
+# ~/Library/Application Support, Linux uses XDG (~/.config); GLAB_CONFIG_DIR
+# overrides both. Prints the first that exists; returns 1 if none do.
+glab_config_file() {
+    local cfg
+    for cfg in \
+        ${GLAB_CONFIG_DIR:+"$GLAB_CONFIG_DIR/config.yml"} \
+        "$HOME/Library/Application Support/glab-cli/config.yml" \
+        "${XDG_CONFIG_HOME:-$HOME/.config}/glab-cli/config.yml"; do
+        [[ -f "$cfg" ]] && { printf '%s\n' "$cfg"; return 0; }
+    done
+    return 1
+}
+
+# Remove any glab auth seed left in a profile's state dir. Called whenever the
+# container must NOT inherit the host glab login (manual token override, or the
+# host is logged out) so a stale seed from a previous run can't linger.
+clear_glab_seed() {
+    local state="$1"
+    [[ "$DRY_RUN" == "true" || -z "$state" ]] && return 0
+    rm -rf "$state/.glab-seed" 2>/dev/null || true
+}
+
+# Stage the host's glab config into a profile's state dir so the container's own
+# glab can read AND refresh it. The state dir is bind-mounted at ~/.claude, the
+# only writable host path already shared with the container; the entrypoint
+# copies the seed on into glab's real config dir at startup.
+stage_glab_seed() {
+    local state="$1" cfg seed
+    [[ -n "$state" ]] || return 0
+    cfg=$(glab_config_file) || { clear_glab_seed "$state"; return 0; }
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log_verbose "glab: would stage host config for in-sandbox refresh"
+        return 0
+    fi
+    seed="$state/.glab-seed"
+    mkdir -p "$seed"
+    cp "$cfg" "$seed/config.yml"
+    chmod 700 "$seed"
+    chmod 600 "$seed/config.yml"
+    log_verbose "glab: staged host config for in-sandbox auth (self-refreshing)"
+}
+
+# Carry the host's GitHub / GitLab CLI auth into the sandbox.
 #
-# Appends `VAR=value` pairs to the FORGE_ENV array for the caller to pass on to
-# compose. Skipped for a token already set in the shell or pinned in .env, so a
-# manual override wins. Silent when a CLI is absent or logged out on the host —
-# the sandbox just starts with that forge logged out.
+# gh keeps its token in the macOS Keychain and it's long-lived, so resolving it
+# to a single GH_TOKEN env var (the var gh reads for non-interactive auth) is
+# enough — appended to the FORGE_ENV array for the caller to pass to compose.
+#
+# glab is different. A glab login is usually OAuth2: the access token in the
+# config is short-lived (~2h) and glab silently mints a new one from the stored
+# refresh token whenever it expires — which is why it "just works" on the host
+# without ever logging in again. Forwarding only that access token as
+# GITLAB_TOKEN froze a single snapshot: it 401'd the moment it expired mid-run
+# and the container had no refresh token to recover. So instead of a token we
+# stage glab's whole config (access token + refresh token + expiry) into the
+# profile state and let the container's glab refresh itself exactly like the
+# host does. A long-lived PAT login lands here too and just works.
+#
+# A token set in the shell or pinned in .env still wins and is forwarded
+# verbatim (the escape hatch for a self-hosted PAT); the seed is cleared so the
+# two can't fight. Silent when a CLI is absent or logged out on the host — the
+# sandbox just starts with that forge logged out.
+#
+# $1: the profile's state dir (bind-mounted at ~/.claude), or empty to skip glab
+# staging. Sets FORGE_ENV.
 resolve_forge_tokens() {
+    local state="${1:-}"
     FORGE_ENV=()
 
     if [[ -z "${GH_TOKEN:-}" ]] && ! env_file_has GH_TOKEN && command -v gh >/dev/null 2>&1; then
@@ -1184,27 +1241,16 @@ resolve_forge_tokens() {
         fi
     fi
 
-    if [[ -z "${GITLAB_TOKEN:-}" ]] && ! env_file_has GITLAB_TOKEN && command -v yq >/dev/null 2>&1; then
-        local host="${GITLAB_HOST:-gitlab.com}" tok="" cfg=""
-        # glab has no stable non-interactive "print token" command (the pinned
-        # 1.108 lacks `auth token`), so read the token straight from its
-        # plaintext config — covers both PAT and OAuth2 logins. The config dir
-        # differs per OS: macOS uses ~/Library/Application Support, Linux uses
-        # XDG (~/.config); GLAB_CONFIG_DIR overrides both. Try each.
-        for cfg in \
-            ${GLAB_CONFIG_DIR:+"$GLAB_CONFIG_DIR/config.yml"} \
-            "$HOME/Library/Application Support/glab-cli/config.yml" \
-            "${XDG_CONFIG_HOME:-$HOME/.config}/glab-cli/config.yml"; do
-            [[ -f "$cfg" ]] || continue
-            # Note: `.token // ""` misbehaves in yq v4.5x, so guard "null" in shell.
-            tok=$(yq ".hosts.[\"$host\"].token" "$cfg" 2>/dev/null || true)
-            [[ "$tok" == "null" ]] && tok=""
-            [[ -n "$tok" ]] && break
-        done
-        if [[ -n "$tok" ]]; then
-            FORGE_ENV+=(GITLAB_TOKEN="$tok")
-            log_verbose "glab: forwarding host auth token for $host"
-        fi
+    if [[ -n "${GITLAB_TOKEN:-}" ]]; then
+        FORGE_ENV+=(GITLAB_TOKEN="$GITLAB_TOKEN")
+        log_verbose "glab: forwarding GITLAB_TOKEN from the shell"
+        clear_glab_seed "$state"
+    elif env_file_has GITLAB_TOKEN; then
+        # Pinned in .env: compose reads it straight from the env file, so nothing
+        # to forward here — just make sure a stale seed doesn't override it.
+        clear_glab_seed "$state"
+    else
+        stage_glab_seed "$state"
     fi
 }
 
@@ -1283,8 +1329,10 @@ cmd_run() {
         SANDBOX_STATE_DIR="$STATE_DIR"
         SANDBOX_SETTINGS="$SETTINGS_FILE"
     )
-    # gh / glab auth, resolved from the host so both CLIs start logged in.
-    resolve_forge_tokens
+    # gh / glab auth, resolved from the host so both CLIs start logged in. glab's
+    # config is staged into the profile state (bind-mounted at ~/.claude) so the
+    # container can refresh an OAuth2 token itself.
+    resolve_forge_tokens "$STATE_DIR/$profile"
     [[ ${#FORGE_ENV[@]} -gt 0 ]] && env_args+=("${FORGE_ENV[@]}")
 
     build_compose_args

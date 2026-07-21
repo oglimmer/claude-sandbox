@@ -76,11 +76,16 @@ services:
       - GRAFANA_URL=${GRAFANA_URL:-}
       - GRAFANA_SERVICE_ACCOUNT_TOKEN=${GRAFANA_SERVICE_ACCOUNT_TOKEN:-}
       # GitHub / GitLab CLI auth, carried over from the host. The wrapper
-      # (oglimmer.sh) resolves the tokens from the host's own gh/glab at run time
-      # and injects them here, so `gh` / `glab` are logged in inside the sandbox
-      # without an interactive `gh auth login`. GH_HOST / GITLAB_HOST target a
-      # self-hosted instance; set them (and the matching token) in .env if you
-      # don't use github.com / gitlab.com. Unset -> the CLI stays logged out.
+      # (oglimmer.sh) resolves gh's token from the host at run time and injects
+      # it here, so `gh` is logged in inside the sandbox without an interactive
+      # `gh auth login`. glab is handled differently: its login is usually a
+      # short-lived OAuth2 token that glab refreshes on its own, so the wrapper
+      # stages the whole glab config into ~/.claude/.glab-seed instead (the
+      # entrypoint installs it), letting the container refresh like the host.
+      # GITLAB_TOKEN here stays as a manual override — set it (or GH_TOKEN) in
+      # .env to pin a self-hosted PAT and it wins over the staged config.
+      # GH_HOST / GITLAB_HOST target a self-hosted instance. Unset + logged out
+      # on the host -> the CLI stays logged out.
       - GH_TOKEN=${GH_TOKEN:-}
       - GH_HOST=${GH_HOST:-}
       - GITLAB_TOKEN=${GITLAB_TOKEN:-}
