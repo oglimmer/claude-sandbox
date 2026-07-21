@@ -1184,17 +1184,23 @@ resolve_forge_tokens() {
         fi
     fi
 
-    if [[ -z "${GITLAB_TOKEN:-}" ]] && ! env_file_has GITLAB_TOKEN; then
-        local host="${GITLAB_HOST:-gitlab.com}" tok=""
-        # Prefer glab itself; fall back to its plaintext config (glab need not be
-        # installed on the host for its token to be forwardable).
-        if command -v glab >/dev/null 2>&1; then
-            tok=$(glab auth token --hostname "$host" 2>/dev/null || true)
-        fi
-        if [[ -z "$tok" ]] && command -v yq >/dev/null 2>&1; then
-            local cfg="${XDG_CONFIG_HOME:-$HOME/.config}/glab-cli/config.yml"
-            [[ -f "$cfg" ]] && tok=$(yq ".hosts.\"$host\".token // \"\"" "$cfg" 2>/dev/null || true)
-        fi
+    if [[ -z "${GITLAB_TOKEN:-}" ]] && ! env_file_has GITLAB_TOKEN && command -v yq >/dev/null 2>&1; then
+        local host="${GITLAB_HOST:-gitlab.com}" tok="" cfg=""
+        # glab has no stable non-interactive "print token" command (the pinned
+        # 1.108 lacks `auth token`), so read the token straight from its
+        # plaintext config — covers both PAT and OAuth2 logins. The config dir
+        # differs per OS: macOS uses ~/Library/Application Support, Linux uses
+        # XDG (~/.config); GLAB_CONFIG_DIR overrides both. Try each.
+        for cfg in \
+            ${GLAB_CONFIG_DIR:+"$GLAB_CONFIG_DIR/config.yml"} \
+            "$HOME/Library/Application Support/glab-cli/config.yml" \
+            "${XDG_CONFIG_HOME:-$HOME/.config}/glab-cli/config.yml"; do
+            [[ -f "$cfg" ]] || continue
+            # Note: `.token // ""` misbehaves in yq v4.5x, so guard "null" in shell.
+            tok=$(yq ".hosts.[\"$host\"].token" "$cfg" 2>/dev/null || true)
+            [[ "$tok" == "null" ]] && tok=""
+            [[ -n "$tok" ]] && break
+        done
         if [[ -n "$tok" ]]; then
             FORGE_ENV+=(GITLAB_TOKEN="$tok")
             log_verbose "glab: forwarding host auth token for $host"
