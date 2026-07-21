@@ -1,8 +1,8 @@
 class ClaudeSandbox < Formula
   desc "Run Claude Code in a container, one profile per project directory"
   homepage "https://github.com/oglimmer/claude-sandbox"
-  url "https://github.com/oglimmer/claude-sandbox/archive/refs/tags/v1.2.0.tar.gz"
-  sha256 "91adde14c3930a162061d22f4b099069cf3310dabd07f2b15471555fb793933d"
+  url "https://github.com/oglimmer/claude-sandbox/archive/refs/tags/v1.3.0.tar.gz"
+  sha256 ""
   license "MIT"
 
   # Docker itself is a cask (Docker Desktop / OrbStack), so it can't be a
