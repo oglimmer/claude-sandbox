@@ -30,7 +30,7 @@ The image bundles four language runtimes so Claude can build/test polyglot proje
 | Node.js  | 22.x           | base image (`node:22-bookworm-slim`) |
 | Python   | 3.11 + pip/venv | Debian bookworm                     |
 | Go       | 1.23.5         | official tarball (`/usr/local/go`)  |
-| Java     | Temurin JDK 21 | Adoptium apt repo                   |
+| Java     | Temurin JDK 21 + 25 | Adoptium apt repo (default 21; `use-java` to switch) |
 | Maven    | 3.8.7          | Debian bookworm                     |
 
 Plus the CLIs the mounts below need: `docker` (+ buildx/compose plugins),
@@ -41,7 +41,16 @@ scripts often carry a zsh shebang).
 Override the pinned versions at build time, e.g.:
 
 ```bash
-docker compose build --build-arg GO_VERSION=1.24.0 --build-arg JDK_VERSION=17
+docker compose build --build-arg GO_VERSION=1.24.0 --build-arg JDK_VERSIONS="17 21 25"
+```
+
+The first `JDK_VERSIONS` entry is the image default (`java` on `PATH`,
+`JAVA_HOME`). All listed JDKs coexist; switch per-shell at runtime without a
+rebuild:
+
+```bash
+eval "$(use-java 25)"   # this shell now uses JDK 25
+java -version
 ```
 
 `GOPATH` is `$HOME/go`, and `$HOME/go/bin` + the npm global bin dir are on `PATH`

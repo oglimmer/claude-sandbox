@@ -61,7 +61,10 @@ RUN set -eux; \
 ENV PATH=/usr/local/go/bin:${PATH}
 
 # JDK: Eclipse Temurin (Adoptium) — modern LTS, multi-arch (amd64 + arm64).
-ARG JDK_VERSION=21
+# Space-separated list; every listed JDK is installed and coexists in the image.
+# The FIRST entry is the image default (java/javac on PATH + JAVA_HOME).
+# Switch versions per-shell at runtime with:  eval "$(use-java 25)"
+ARG JDK_VERSIONS="21 25"
 RUN set -eux; \
     mkdir -p /etc/apt/keyrings; \
     curl -fsSL https://packages.adoptium.net/artifactory/api/gpg/key/public \
@@ -70,9 +73,35 @@ RUN set -eux; \
     echo "deb [signed-by=/etc/apt/keyrings/adoptium.gpg] https://packages.adoptium.net/artifactory/deb ${codename} main" \
         > /etc/apt/sources.list.d/adoptium.list; \
     apt-get update; \
-    apt-get install -y --no-install-recommends "temurin-${JDK_VERSION}-jdk"; \
+    for v in ${JDK_VERSIONS}; do \
+        apt-get install -y --no-install-recommends "temurin-${v}-jdk"; \
+    done; \
     rm -rf /var/lib/apt/lists/*; \
+    arch="$(dpkg --print-architecture)"; \
+    default_ver="$(set -- ${JDK_VERSIONS}; echo "$1")"; \
+    ln -sfn "/usr/lib/jvm/temurin-${default_ver}-jdk-${arch}" /usr/lib/jvm/default; \
     java -version
+ENV JAVA_HOME=/usr/lib/jvm/default
+ENV PATH=${JAVA_HOME}/bin:${PATH}
+
+# use-java <version>: emit exports pointing JAVA_HOME/PATH at an installed
+# Temurin JDK. Per-shell, no root needed —  eval "$(use-java 25)".
+RUN set -eux; \
+    printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'set -euo pipefail' \
+        'v="${1:?usage: eval \"\$(use-java <version>)\"}"' \
+        'arch="$(dpkg --print-architecture)"' \
+        'jdk="/usr/lib/jvm/temurin-${v}-jdk-${arch}"' \
+        'if [ ! -d "$jdk" ]; then' \
+        '  echo "JDK $v not installed. Available:" >&2' \
+        '  ls -1 /usr/lib/jvm | sed -n "s/^temurin-\([0-9]*\)-jdk-.*/  \1/p" | sort -u >&2' \
+        '  exit 1' \
+        'fi' \
+        'echo "export JAVA_HOME=$jdk"' \
+        'echo "export PATH=$jdk/bin:\$PATH"' \
+        > /usr/local/bin/use-java; \
+    chmod +x /usr/local/bin/use-java
 
 # ---- Docker CLI ------------------------------------------------------------
 # Client only — no daemon in this image. It talks to the `dind` sidecar over TCP
