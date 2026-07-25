@@ -160,7 +160,8 @@ ${BOLD}COMMANDS:${RESET}
     mcp-rm PROFILE NAME         Remove an MCP server from the profile
     skill-add PROFILE SRC       Copy a skill directory into the profile
     skill-rm PROFILE NAME       Remove a skill from the profile
-    doctor                      Check every profile for the usual breakages
+    doctor                      Check every profile, and the ssh-agent, for
+                                the usual breakages
     run [CLAUDE ARGS...]        Start the sandbox with the active profile;
                                 anything after 'run' is passed to Claude Code
                                 (e.g. 'run -c' to continue the last session)
@@ -541,7 +542,7 @@ env_var_status() {
     name="${name#\{}"
     name="${name%\}}"
     if [[ -f "$ENV_FILE" ]] && grep -qE "^[[:space:]]*${name}=.+" "$ENV_FILE"; then
-        if grep -qE "^[[:space:]]*-[[:space:]]*${name}=" "/docker-compose.yml"; then
+        if grep -qE "^[[:space:]]*-[[:space:]]*${name}=" "$ASSETS_DIR/docker-compose.yml"; then
             echo "ok"
         else
             echo "no-passthrough"
@@ -1015,6 +1016,63 @@ cmd_skill_rm() {
     log_success "Removed skill '$name' from profile '$profile'"
 }
 
+# The container never gets a usable private key: the host's is passphrase-locked
+# and the macOS Keychain that unlocks it doesn't exist in Linux. Signing is
+# forwarded to the host's ssh-agent instead — so an agent holding no identity is
+# a sandbox that looks healthy right up until the first push. macOS starts a
+# fresh agent per login, which makes this a once-per-reboot trap rather than a
+# one-time setup step. Returns the number of issues found.
+check_ssh() {
+    local issues=0
+
+    # Nothing to say without keys to forward, or if the socket mount was removed.
+    [[ -d "$HOME/.ssh" ]] || return 0
+    grep -q 'ssh-auth\.sock' "$ASSETS_DIR/docker-compose.yml" 2>/dev/null || return 0
+
+    echo
+    echo -e "${BOLD}Checking ssh${RESET}"
+
+    local hint="ssh-add ~/.ssh/id_rsa"
+    [[ "$(uname -s)" == "Darwin" ]] && hint="ssh-add --apple-load-keychain"
+
+    # 0 = identities loaded, 1 = agent reachable but empty, 2 = no agent at all.
+    local rc=0
+    ssh-add -l >/dev/null 2>&1 || rc=$?
+
+    if [[ $rc -eq 0 ]]; then
+        local count
+        count=$(ssh-add -l 2>/dev/null | grep -c '' || true)
+        log_success "host ssh-agent holds $count identity(ies) to forward"
+        return 0
+    fi
+
+    if [[ $rc -eq 1 ]]; then
+        log_warning "host ssh-agent is empty — the sandbox has nothing to sign with, so git push fails with 'Permission denied (publickey)'. Run: $hint"
+    else
+        log_warning "no ssh-agent reachable (SSH_AUTH_SOCK=${SSH_AUTH_SOCK:-unset}) — nothing to forward. Run: $hint"
+    fi
+    issues=$((issues + 1))
+
+    # Unencrypted keys are copied into the container along with the rest of
+    # ~/.ssh, and ssh offers them for any host whose config block names no
+    # IdentityFile. With an empty agent that turns a clean failure into a push
+    # authenticated as whatever account those keys belong to.
+    local key names=()
+    while IFS= read -r key; do
+        [[ -n "$key" ]] || continue
+        ssh-keygen -y -P '' -f "$key" >/dev/null 2>&1 && names+=("$(basename "$key")")
+    done < <(find "$HOME/.ssh" -maxdepth 1 -type f ! -name '*.pub' 2>/dev/null || true)
+
+    if [[ ${#names[@]} -gt 0 ]]; then
+        local list
+        list=$(printf '%s, ' "${names[@]}")
+        log_warning "passphrase-less key(s) go in beside it: ${list%, } — ssh can authenticate as one of these instead of failing. Confirm the identity with 'ssh -T git@github.com' inside the sandbox"
+        issues=$((issues + 1))
+    fi
+
+    return $issues
+}
+
 cmd_doctor() {
     local issues=0
     local active
@@ -1125,6 +1183,12 @@ cmd_doctor() {
             fi
         done < <(find -L "$STATE_DIR" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null | sort)
     fi
+
+    # Returns a count rather than printing into the total itself, so the summary
+    # below still speaks for the whole run.
+    local ssh_issues=0
+    check_ssh || ssh_issues=$?
+    issues=$((issues + ssh_issues))
 
     echo
     if [[ $issues -eq 0 ]]; then

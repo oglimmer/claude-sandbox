@@ -364,6 +364,13 @@ in `docker-compose.yml`, root-owned directories compose created, skill
 directories missing a `SKILL.md`, and state directories left behind by deleted
 profiles.
 
+It also checks the host ssh-agent, because that one is a *recurring* breakage
+rather than a setup mistake: macOS starts a fresh agent per login, so a reboot
+leaves the sandbox unable to push until the key is loaded again (see
+[SSH](#ssh)). An empty agent is reported with the `ssh-add` line to fix it, and —
+since ssh then falls through to whatever passphrase-less keys came along in
+`~/.ssh` — the keys that could answer in its place are listed too.
+
 `--dry-run` and `-v` work throughout. `list` redacts literal secret values and
 flags them, so the output is safe to paste.
 
