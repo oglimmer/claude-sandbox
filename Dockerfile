@@ -272,8 +272,19 @@ ENV PATH=/home/${USERNAME}/.npm-global/bin:/home/${USERNAME}/go/bin:/home/${USER
 
 # ---- Claude Code -----------------------------------------------------------
 # Installed as the non-root user into the writable prefix above.
+#
+# Pinned through a build arg, because an unpinned `npm install` is a cache hit
+# forever: it resolves `latest` once, at first build, and Docker has no way to
+# know that tag has since moved — the image quietly falls releases behind.
+# `claude-sandbox rebuild` looks up the current version and passes it in, so
+# this layer's cache key changes exactly when Anthropic publishes. Everything
+# expensive is above it; only the two mkdirs and the COPY below rebuild with it.
+#
+# `latest` stays the default so a plain `docker compose build` on a cold cache
+# is still correct; `claude-sandbox doctor` reports the drift on a warm one.
 USER ${USERNAME}
-RUN npm install -g @anthropic-ai/claude-code @ast-grep/cli \
+ARG CLAUDE_CODE_VERSION=latest
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION} @ast-grep/cli \
     && npm cache clean --force
 
 # Pre-create the config dir owned by the claude user. A named volume mounted

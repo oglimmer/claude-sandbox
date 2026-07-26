@@ -46,6 +46,9 @@ ENV_FILE="$SANDBOX_HOME/.env"
 OVERRIDE_FILE="$SANDBOX_HOME/docker-compose.override.yml"
 SETTINGS_FILE="$SANDBOX_HOME/claude-settings.json"
 
+# Must match the `image:` of the claude service in docker-compose.yml.
+IMAGE_NAME="claude-sandbox:latest"
+
 VERBOSE="${VERBOSE:-false}"
 DRY_RUN="${DRY_RUN:-false}"
 HELP=false
@@ -160,14 +163,16 @@ ${BOLD}COMMANDS:${RESET}
     mcp-rm PROFILE NAME         Remove an MCP server from the profile
     skill-add PROFILE SRC       Copy a skill directory into the profile
     skill-rm PROFILE NAME       Remove a skill from the profile
-    doctor                      Check every profile, and the ssh-agent, for
-                                the usual breakages
+    doctor                      Check every profile, the ssh-agent and the
+                                built image for the usual breakages
     run [CLAUDE ARGS...]        Start the sandbox with the active profile;
                                 anything after 'run' is passed to Claude Code
                                 (e.g. 'run -c' to continue the last session)
-    rebuild [--no-cache]        Rebuild the sandbox image — run this after a
-                                'brew upgrade', which refreshes the Dockerfile
-                                but not the built image ('--pull' also allowed)
+    rebuild [--no-cache]        Rebuild the sandbox image on the latest release
+                                of Claude Code — run this after a 'brew
+                                upgrade', which refreshes the Dockerfile but not
+                                the built image, or when 'doctor' reports the
+                                image is behind ('--pull' also allowed)
 
 ${BOLD}OPTIONS:${RESET}
     -p, --profile NAME          Act on this profile instead of the active one
@@ -181,6 +186,14 @@ ${BOLD}OPTIONS:${RESET}
 ${BOLD}MCP-ADD OPTIONS:${RESET}
         --env KEY=VALUE         Environment variable for the server (repeatable)
         --transport TYPE        Transport for --url servers (default: http)
+
+${BOLD}REBUILD OPTIONS:${RESET}
+        --claude-version VER    Install this Claude Code instead of the latest
+                                on npm — to hold back, or to reproduce an
+                                older sandbox
+        --no-cache              Rebuild every layer, not just the ones whose
+                                inputs changed
+        --pull                  Refresh the base image first
 
 ${BOLD}WHICH PROFILE:${RESET}
 ${profile_rule}
@@ -1022,6 +1035,66 @@ cmd_skill_rm() {
 # a sandbox that looks healthy right up until the first push. macOS starts a
 # fresh agent per login, which makes this a once-per-reboot trap rather than a
 # one-time setup step. Returns the number of issues found.
+# The Claude Code version npm would install right now. Read from the registry
+# directly rather than through `npm view`, which isn't installed on every host
+# (the sandbox exists so node doesn't have to be). Prints nothing on any
+# failure — every caller treats that as "can't tell" rather than an error.
+latest_claude_version() {
+    curl -fsSL --max-time 5 \
+        https://registry.npmjs.org/@anthropic-ai/claude-code/latest 2>/dev/null \
+        | jq -r '.version // empty' 2>/dev/null
+}
+
+# The version baked into the built image — which is what actually runs, since
+# `docker compose run --rm` starts from the image every time and throws away
+# whatever Claude Code's own auto-updater did in the previous session.
+image_claude_version() {
+    docker run --rm --entrypoint claude "$IMAGE_NAME" --version 2>/dev/null \
+        | awk 'NR == 1 { print $1 }'
+}
+
+# A stale image is invisible otherwise: nothing about the sandbox looks any
+# different when it's five releases behind.
+check_image() {
+    local issues=0
+
+    echo
+    echo -e "${BOLD}Checking the image${RESET}"
+
+    if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
+        log_warning "Docker is not running — skipping the image check"
+        return 0
+    fi
+
+    if ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
+        log_warning "$IMAGE_NAME has not been built yet — the first run builds it"
+        return 0
+    fi
+
+    local installed latest
+    installed=$(image_claude_version)
+    latest=$(latest_claude_version)
+
+    if [[ -z "$installed" ]]; then
+        log_warning "could not read Claude Code's version out of $IMAGE_NAME"
+        return 1
+    fi
+
+    if [[ -z "$latest" ]]; then
+        log_warning "Claude Code $installed is installed; the npm registry was unreachable, so there is nothing to compare against"
+        return 0
+    fi
+
+    if [[ "$installed" == "$latest" ]]; then
+        log_success "Claude Code $installed is the latest on npm"
+    else
+        log_warning "Claude Code $installed is installed, $latest is on npm — run: ${SCRIPT_NAME} rebuild"
+        issues=$((issues + 1))
+    fi
+
+    return $issues
+}
+
 check_ssh() {
     local issues=0
 
@@ -1184,11 +1257,15 @@ cmd_doctor() {
         done < <(find -L "$STATE_DIR" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null | sort)
     fi
 
-    # Returns a count rather than printing into the total itself, so the summary
-    # below still speaks for the whole run.
+    # Both return a count rather than printing into the total themselves, so the
+    # summary below still speaks for the whole run.
     local ssh_issues=0
     check_ssh || ssh_issues=$?
     issues=$((issues + ssh_issues))
+
+    local image_issues=0
+    check_image || image_issues=$?
+    issues=$((issues + image_issues))
 
     echo
     if [[ $issues -eq 0 ]]; then
@@ -1434,22 +1511,45 @@ cmd_rebuild() {
     [[ "$DRY_RUN" == "true" ]] || check_docker
 
     local build_flags=()
-    local a
-    for a in "${ARGS[@]:-}"; do
-        case "$a" in
+    local version=""
+    local rest=(${ARGS[@]+"${ARGS[@]}"})
+    local i=0
+    while [[ $i -lt ${#rest[@]} ]]; do
+        case "${rest[$i]}" in
             "") ;;
-            --no-cache|--pull) build_flags+=("$a") ;;
-            *) log_error "Unknown rebuild option: $a"; exit 1 ;;
+            --no-cache|--pull) build_flags+=("${rest[$i]}") ;;
+            --claude-version)
+                i=$((i + 1))
+                [[ $i -lt ${#rest[@]} && -n "${rest[$i]}" ]] \
+                    || { log_error "--claude-version needs a version (or 'latest')"; exit 1; }
+                version="${rest[$i]}"
+                ;;
+            *) log_error "Unknown rebuild option: ${rest[$i]}"; exit 1 ;;
         esac
+        i=$((i + 1))
     done
 
-    build_compose_args
-    log_info "Rebuilding the sandbox image (claude-sandbox:latest)"
-    if [[ ${#build_flags[@]} -gt 0 ]]; then
-        execute_cmd docker compose "${COMPOSE_ARGS[@]}" build "${build_flags[@]}" claude
-    else
-        execute_cmd docker compose "${COMPOSE_ARGS[@]}" build claude
+    # Resolving the version here rather than leaving the Dockerfile's `latest`
+    # default in place is the whole point: `latest` is a cache hit against
+    # whatever it meant at first build, so the image can sit releases behind
+    # while every rebuild reports success. A concrete version changes the
+    # layer's cache key exactly when Anthropic publishes — cheap no-op when
+    # current, real update when not. --claude-version pins it deliberately, for
+    # holding back or reproducing an older sandbox.
+    if [[ -z "$version" ]]; then
+        version=$(latest_claude_version)
+        if [[ -n "$version" ]]; then
+            log_info "Latest Claude Code on npm: $version"
+        else
+            version="latest"
+            log_warning "Could not reach the npm registry — building with CLAUDE_CODE_VERSION=latest, which a warm cache may still resolve to an older release. Add --no-cache to force a fresh install."
+        fi
     fi
+    build_flags+=(--build-arg "CLAUDE_CODE_VERSION=$version")
+
+    build_compose_args
+    log_info "Rebuilding the sandbox image ($IMAGE_NAME)"
+    execute_cmd docker compose "${COMPOSE_ARGS[@]}" build "${build_flags[@]}" claude
     log_success "Image rebuilt — the next 'claude-sandbox' run uses it"
 }
 

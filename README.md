@@ -323,6 +323,31 @@ and showing what a workspace actually gets:
 > it's *missing* — so a changed Dockerfile (a new tool, a version bump) stays
 > invisible until you rebuild. Add `--no-cache` to force every layer.
 
+### Keeping Claude Code current
+
+The sandbox runs whatever Claude Code is baked into the image. Claude Code's own
+auto-updater doesn't help here: `docker compose run --rm` starts from the image
+every time, so an in-session update is thrown away when you exit.
+
+`rebuild` looks up the current version on npm and passes it to the build as
+`CLAUDE_CODE_VERSION`. That's what keeps it honest — an unpinned `npm install`
+layer is a cache hit against whatever `latest` meant at first build, so the image
+can sit releases behind while every rebuild reports success. With the version in
+the build arg, the layer's cache key changes exactly when Anthropic publishes:
+
+```bash
+claude-sandbox rebuild                          # ~1s when current, ~1min when not
+claude-sandbox rebuild --claude-version 2.1.217 # hold back a release
+```
+
+`doctor` compares the image against npm, so you find out you're behind without
+guessing:
+
+```
+Checking the image
+[WARN] Claude Code 2.1.217 is installed, 2.1.220 is on npm — run: claude-sandbox rebuild
+```
+
 ### Switching profiles
 
 `-p` picks a profile for one command, without touching `.env`:
@@ -362,7 +387,8 @@ workspace that has gone missing, two profiles sharing one directory, invalid
 `mcp.json`, `${VAR}` references that aren't set in `.env` or lack a passthrough
 in `docker-compose.yml`, root-owned directories compose created, skill
 directories missing a `SKILL.md`, and state directories left behind by deleted
-profiles.
+profiles. It also compares the Claude Code in the built image against the latest
+on npm.
 
 It also checks the host ssh-agent, because that one is a *recurring* breakage
 rather than a setup mistake: macOS starts a fresh agent per login, so a reboot
@@ -559,8 +585,9 @@ build args in `docker-compose.yml`.
 - Run a long-lived container you can exec into repeatedly:
   `docker compose run -d --name claude-sandbox claude sleep infinity`, then
   `docker exec -it claude-sandbox claude`
-- Rebuild after changing the Dockerfile (or a `brew upgrade`):
-  `claude-sandbox rebuild` (add `--no-cache` to force every layer)
+- Rebuild after changing the Dockerfile (or a `brew upgrade`), which also picks
+  up the latest Claude Code: `claude-sandbox rebuild` (add `--no-cache` to force
+  every layer, `--claude-version VER` to pin instead of taking the latest)
 
 ## License
 
