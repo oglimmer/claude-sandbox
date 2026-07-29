@@ -21,9 +21,25 @@
       }
     },
     "playwright": {
+      "$comment": [
+        "All three flags are required in this sandbox; the defaults do not work.",
+        "--browser chromium: the default is the `chrome` channel, which the server",
+        "  looks for at /opt/google/chrome/chrome — absent from this image.",
+        "--headless: the server defaults to HEADED, and there is no X display.",
+        "--output-dir: otherwise it drops .playwright-mcp/ and screenshots into the",
+        "  repo root, i.e. into the user's bind-mounted workspace.",
+        "One-time per browsers volume, `chromium` resolves to a chrome-for-testing",
+        "build that is NOT the engine `npx playwright install chromium` provides:",
+        "    npx @playwright/mcp install-browser chrome-for-testing"
+      ],
       "type": "stdio",
       "command": "npx",
-      "args": ["-y", "@playwright/mcp@latest"]
+      "args": [
+        "-y", "@playwright/mcp@latest",
+        "--browser", "chromium",
+        "--headless",
+        "--output-dir", "/tmp/playwright-mcp"
+      ]
     }
   }
 }

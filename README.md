@@ -38,6 +38,9 @@ Plus the CLIs the mounts below need: `docker` (+ buildx/compose plugins),
 [GitHub / GitLab CLIs](#github--gitlab-clis-gh--glab)), and `zsh` (host helper
 scripts often carry a zsh shebang).
 
+Playwright's system libraries are baked in too, so headless browser/e2e tests
+run in the sandbox — see [Browser / e2e tests](#browser--e2e-tests-playwright).
+
 Override the pinned versions at build time, e.g.:
 
 ```bash
@@ -553,6 +556,59 @@ the two can't diverge:
 
 Images pulled/built inside the sandbox live in the `dind-data` volume and don't
 touch the host's image store (`docker compose down -v` wipes them).
+
+## Browser / e2e tests (Playwright)
+
+The sandbox runs headless browser tests. The image ships Playwright's **system
+libraries** (the X11/GTK/NSS/font stack, ~350 MB) but **no browser engine**, so
+each repo fetches the engine matching its own pinned `@playwright/test`:
+
+```bash
+npx playwright install chromium   # ~110MB, once per version — then cached
+npx playwright test
+```
+
+Engines land in `$PLAYWRIGHT_BROWSERS_PATH`, backed by the
+`playwright-browsers` named volume, so the download survives `run --rm` and is
+shared by every profile and workspace. Two repos on the same Playwright version
+reuse one copy; two on different versions coexist. Reset with:
+
+```bash
+docker volume rm claude-sandbox_playwright-browsers
+```
+
+Engines are deliberately not baked into the image. Playwright rejects a build
+that doesn't match the installed version (`Executable doesn't exist …`), so a
+baked-in engine gets re-downloaded by most repos anyway while costing
+0.5–1.5 GB in the image.
+
+`shm_size: 1gb` is set on the `claude` service because Chromium puts renderer
+shared memory in `/dev/shm`, and Docker's 64 MB default surfaces as `SIGBUS` /
+"Target closed" crashes that read like flaky tests. The usual
+`--disable-dev-shm-usage` workaround isn't needed.
+
+**Headless only** — there is no X display, so `--headed` and
+`playwright show-report` won't work. Use `--screenshot=on` / `--trace=on` and
+read the artifacts out of the workspace. Only Chromium's system libraries are
+baked in; for the others run `sudo npx playwright install-deps firefox` first.
+
+Serve the app under test from **inside the `claude` container** and reach it on
+`localhost`. A server in the `dind` sidecar is not on this container's
+localhost — address it as `dind`.
+
+For interactive browser driving (navigate/click/snapshot as agent tools rather
+than a test suite), add the Playwright MCP server to a profile — see
+`profiles/default/mcp.json.example`, which ships the entry:
+
+```bash
+./oglimmer.sh mcp-add my-project playwright -- npx -y @playwright/mcp@latest
+```
+
+This is the sandbox's stand-in for Claude in Chrome, which can't work here: that
+extension talks to Claude Code over Chrome **native messaging** (a local stdio
+subprocess), so it would need a full Chrome plus Xvfb, a VNC bridge and
+interactive pairing inside the container — and it drives a browser rather than
+running a test suite.
 
 ## Sandbox hardening
 

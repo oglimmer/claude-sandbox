@@ -227,6 +227,31 @@ RUN set -eux; \
     yq --version; sd --version; difft --version; delta --version; \
     scc --version; hyperfine --version; watchexec --version; trufflehog --version
 
+# ---- Playwright: system libraries only -------------------------------------
+# Browser *engines* are deliberately NOT baked in. Every repo pins its own
+# @playwright/test version, and a browser build from a different version is
+# rejected outright ("Executable doesn't exist ... run npx playwright install"),
+# so a baked-in engine would be re-downloaded by most repos anyway while costing
+# ~500MB-1.5GB in the image. What every version *does* share is this set of apt
+# libraries (X11/GTK/NSS/fonts, ~440MB), which is stable across releases — so we
+# bake the shared part and let each repo fetch its own matching engine into
+# PLAYWRIGHT_BROWSERS_PATH below, which compose backs with a named volume.
+#
+# Pinned like the tools above: `latest` resolves once and then sits in the build
+# cache forever, quietly drifting from the dependency list current Playwright
+# expects.
+#
+# xauth is added on top: install-deps brings in Xvfb and the xvfb-run wrapper,
+# but not xauth, and xvfb-run hard-fails with "xauth command not found" without
+# it. Headless Chromium never touches X so the gap is invisible until something
+# that needs a real display (Electron, a --headed run) tries to start. Xvfb
+# creates /tmp/.X11-unix itself, so xauth is the whole fix.
+ARG PLAYWRIGHT_VERSION=1.62.0
+RUN set -eux; \
+    npx --yes playwright@${PLAYWRIGHT_VERSION} install-deps chromium; \
+    apt-get install -y --no-install-recommends xauth; \
+    rm -rf /var/lib/apt/lists/* /root/.npm
+
 # Documents the toolkit above to Claude. The entrypoint installs it as
 # ~/.claude/CLAUDE.md (the user-level memory file), optionally with a profile's
 # own CLAUDE.md appended. Copied while still root — /opt/sandbox has to be
@@ -266,6 +291,12 @@ ENV NPM_CONFIG_PREFIX=/home/${USERNAME}/.npm-global
 # GOPATH defaults to $HOME/go; put its bin (and the npm prefix bin) on PATH so
 # `go install`ed tools and global npm bins are runnable.
 ENV GOPATH=/home/${USERNAME}/go
+# Where `npx playwright install` puts browser engines. Pointed at an explicit
+# path (rather than the default ~/.cache/ms-playwright) so compose can mount a
+# named volume over exactly this directory: engines then survive `run --rm` and
+# are shared by every workspace, so each pinned Playwright version is downloaded
+# once and only once. See the e2e notes in README.md.
+ENV PLAYWRIGHT_BROWSERS_PATH=/home/${USERNAME}/.cache/ms-playwright
 # ~/.config/custom-script-bin is bind-mounted from the host and holds `git-llm`,
 # which the host git alias `git ai` shells out to.
 ENV PATH=/home/${USERNAME}/.npm-global/bin:/home/${USERNAME}/go/bin:/home/${USERNAME}/.config/custom-script-bin:${PATH}
@@ -296,11 +327,17 @@ RUN mkdir -p ${CLAUDE_CONFIG_DIR} && chmod 700 ${CLAUDE_CONFIG_DIR}
 # Pre-create the bind-mount targets as the non-root user. Docker creates missing
 # mount points owned by root, which would leave ~/.config unwritable for
 # everything *else* that wants to live there.
+#
+# ${PLAYWRIGHT_BROWSERS_PATH} is in the same list for the named-volume reason
+# given at CLAUDE_CONFIG_DIR above: a fresh named volume adopts the ownership of
+# the image directory it covers, and a root-owned one would leave `npx playwright
+# install` unable to write its engines as uid 1000.
 RUN mkdir -p /home/${USERNAME}/.config/git \
              /home/${USERNAME}/.config/custom-script-bin \
              /home/${USERNAME}/.ssh \
              /home/${USERNAME}/.kube \
              /home/${USERNAME}/.m2 \
+             ${PLAYWRIGHT_BROWSERS_PATH} \
     && chmod 700 /home/${USERNAME}/.ssh
 
 WORKDIR /workspace

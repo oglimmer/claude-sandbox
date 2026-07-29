@@ -43,6 +43,11 @@ services:
     stdin_open: true
     tty: true
     working_dir: /workspace
+    # Chromium puts its renderer shared memory in /dev/shm, and Docker's 64MB
+    # default is far too small — tabs die mid-test with SIGBUS / "Target closed"
+    # crashes that look like flaky e2e rather than an OOM. Required for
+    # Playwright; harmless otherwise.
+    shm_size: 1gb
     depends_on:
       dind:
         condition: service_healthy
@@ -114,6 +119,18 @@ services:
       # read-only and replaced on upgrade, so state can't be relative to it. The
       # default keeps a plain `docker compose run` in a checkout working.
       - ${SANDBOX_STATE_DIR:-./profile-state}/${CLAUDE_PROFILE:-default}:/home/claude/.claude
+
+      # Playwright browser engines (PLAYWRIGHT_BROWSERS_PATH in the Dockerfile).
+      # The image ships only the shared apt libraries; each repo fetches the
+      # engine matching its own pinned @playwright/test into here via
+      # `npx playwright install chromium`. A named volume so that download
+      # survives `run --rm` — otherwise every session re-pulls ~110MB.
+      #
+      # Shared across profiles, unlike the state dir above: engines are keyed by
+      # Playwright's own build number, so two workspaces on the same version
+      # reuse one copy and two on different versions coexist side by side. Reset
+      # with `docker volume rm claude-sandbox_playwright-browsers`.
+      - playwright-browsers:/home/claude/.cache/ms-playwright
 
       # ---- Per-workspace profile ------------------------------------------
       # Skills / plugins / MCP servers for this workspace, staged read-only. See
@@ -196,3 +213,4 @@ services:
 
 volumes:
   dind-data:
+  playwright-browsers:

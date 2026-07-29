@@ -38,6 +38,74 @@ regex/line-based equivalents — they understand syntax, so they're more reliabl
 ## Project overview
 - **scc** — fast LOC/complexity counter. Run at the start of exploring an unfamiliar repo: `scc` or `scc --by-file`.
 
+## Browser / e2e tests (Playwright)
+This sandbox can run headless browser tests. The image ships Playwright's **system libraries**
+only — no browser engine — so the first run in a repo needs one extra step:
+
+```sh
+npx playwright install chromium     # ~110MB, then cached for good
+npx playwright test
+```
+
+- The download goes to `$PLAYWRIGHT_BROWSERS_PATH`, backed by a Docker volume, so it persists
+  across sessions and is shared by every workspace. Installing is a **no-op** once the engine
+  for that repo's pinned version is present — just run it, don't try to detect it first.
+- Install the engine matching the repo's own pinned `@playwright/test`; use the repo's local
+  binary (`npx playwright`), not a globally pinned one. A mismatch fails loudly with
+  "Executable doesn't exist" — that message means run the install above, not that the sandbox
+  is broken.
+- **Headless only.** There is no X display. Don't pass `--headed`, and don't try to open a real
+  browser window. For visual checks use `--screenshot=on`, `--trace=on`, or `page.screenshot()`,
+  and read the artifacts out of the workspace. `npx playwright show-report` won't work either
+  (it wants to open a browser) — use `--reporter=list` or read `playwright-report/`.
+- `/dev/shm` is sized 1GB, so the usual `--disable-dev-shm-usage` workaround isn't needed.
+- Firefox and WebKit engines also install, but only Chromium's system libraries are baked in;
+  if a repo needs them run `sudo npx playwright install-deps firefox` (or `webkit`) first.
+- **Serving the app under test:** start its dev server inside this container and reach it on
+  `localhost` as normal. A server running in the `dind` sidecar is *not* on this container's
+  localhost — use the hostname `dind`, or just run the server here.
+- If a `playwright` MCP server is configured in the profile, you also have interactive browser
+  tools (navigate/click/snapshot). It needs its **own** engine, separate from the one above — a
+  `chrome-for-testing` build. If a call fails with `Browser "chrome-for-testing" is not
+  installed`, run `npx @playwright/mcp install-browser chrome-for-testing` once; it caches into
+  the same volume. Don't reach for `npx playwright install chrome` — that wants the `chrome`
+  channel at `/opt/google/chrome/chrome` and is not the same thing.
+- **Electron apps:** Playwright's `_electron.launch()` needs a real display even where headless
+  Chromium doesn't, so wrap the run in `xvfb-run -a npx playwright test`. Use `-a`: plain
+  `xvfb-run` hardcodes display `:99` and dies with "Xvfb failed to start" if anything already
+  holds it.
+
+### Native modules and `node_modules` on a mounted repo — read before `npm install`
+`/workspace` is bind-mounted from the user's **macOS** host, so a `node_modules` installed there
+holds **darwin** binaries. Anything platform-specific is unusable here: Electron's `dist/` is an
+`Electron.app` bundle that Linux feeds to `sh` and chokes on, and native addons (`node-pty`,
+`better-sqlite3`, `sharp`, …) are Mach-O objects Node can't load.
+
+The trap: plain `npm install` / `npm rebuild` in `/workspace` **overwrites those with Linux
+builds**, silently breaking the app on the user's Mac — and the damage is outside the container,
+so it survives everything. This is one of the few ways work in this sandbox escapes it.
+
+So: don't reinstall or rebuild a bind-mounted `node_modules`. Pure-JS installs are fine; the
+moment a package ships a binary, stop and ask. If a task genuinely needs Linux binaries, say so
+and let the user decide — the workable route is a container-only tree
+(`npm ci --prefix /tmp/<name>`, or `NODE_PATH` / a copy outside `/workspace`), never an
+in-place reinstall. Tell the user which packages are affected rather than guessing.
+
+### "Can we use Claude in Chrome here?" — no
+Claude in Chrome is a Chrome extension that reaches Claude Code through Chrome **native
+messaging**: Chrome spawns the Claude Code binary as a local stdio subprocess. There is no port
+or socket, so it only works where Chrome and Claude Code sit on the same machine. This container
+has no Chrome and no route to the one on the host.
+
+Answer that question with a plain **no** — don't offer to bridge it, install Chrome, or
+reinterpret the question as something else. The options here are:
+
+1. **Playwright** (above) — scripted browser control and e2e suites.
+2. **Playwright MCP** — interactive navigate/click/snapshot tools, if the profile configures it.
+
+Claude in Chrome still works normally in the user's own browser on the host; it is simply not
+reachable from inside the sandbox, and nothing built here can change that.
+
 ## Benchmark & watch
 - **hyperfine** — statistical command benchmarking. Use to back up perf claims: `hyperfine 'cmd a' 'cmd b' --export-markdown bench.md`.
 - **watchexec** — run a command on file changes for feedback loops: `watchexec -e py -- pytest`, `watchexec -r -- ./server`.
