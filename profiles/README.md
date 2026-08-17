@@ -14,9 +14,11 @@ exactly like the sandbox did before profiles existed.
 profiles/
   common/
     skills/            skills every profile gets
+    output-styles/     output styles every profile gets
   <profile>/
     workspace          the host directory to mount at /workspace
     skills/            skills only this workspace gets (copied over common/)
+    output-styles/     output styles only this workspace gets (over common/)
     plugins/           plugin directories, passed via --plugin-dir
     mcp.json           MCP servers, passed via --mcp-config   (gitignored)
     settings.json      settings overlaid on ../../claude-settings.json
@@ -29,6 +31,7 @@ profiles/
 | ----- | --------- |
 | `workspace` | Read by `oglimmer.sh run`, exported as `WORKSPACE_DIR`, bind-mounted at `/workspace` by both the `claude` and `dind` services |
 | `skills/` | Copied into `~/.claude/skills` at startup — `common/` first, then the profile on top, so a profile can shadow a common skill by name |
+| `output-styles/` | Copied into `~/.claude/output-styles` the same way. Copying only puts the style *on the shelf*; something still has to select it by its `name:` field — see below |
 | `plugins/` | `--plugin-dir`, which loads plugin directories without a marketplace install |
 | `mcp.json` | `--mcp-config` |
 | `settings.json` | `--settings`, layered on the repo-wide `claude-settings.json` |
@@ -37,6 +40,27 @@ profiles/
 Skills are rebuilt from the read-only mounts on every start, so switching
 profiles never leaves another workspace's skills behind, and host-side edits
 land on the next run.
+
+Output styles are copied but not rebuilt — the directory is never wiped. A
+leftover skill from another profile is live and the agent acts on it; a leftover
+style is inert unless something names it, and wiping would delete styles created
+inside the container with `/output-style:new`, which land in that same
+directory. Host-side edits still win, because the copy runs after.
+
+## Selecting an output style
+
+Shipping the file is only half of it. `outputStyle` in a settings file picks
+which one is active, by the style's `name:` field — not its filename:
+
+| Where | Effect |
+| ----- | ------ |
+| `profiles/<name>/settings.json` | That profile only. `--settings` is applied on every start, so it takes effect immediately on existing profiles |
+| `../claude-settings.json` | The baseline for profiles created from now on. Seeded into `~/.claude/settings.json` on **first run only**, so profiles that already have state keep whatever they have |
+| `/output-style` inside the container | Written to `profile-state/<name>/settings.json` by the CLI, and it persists |
+
+Prefer the profile's `settings.json` when you want a style on now. Reach for
+`claude-settings.json` only when you want it to be the default every *new*
+profile inherits.
 
 ## Secrets in mcp.json
 

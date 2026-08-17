@@ -288,6 +288,7 @@ directory it works on, recorded in `profiles/<name>/workspace` and mounted at
 | In the profile | Reaches Claude Code as |
 | -------------- | ---------------------- |
 | `skills/`      | copied into `~/.claude/skills` (after `profiles/common/skills`, so it can shadow by name) |
+| `output-styles/` | copied into `~/.claude/output-styles` (same precedence); select one with `outputStyle` in `settings.json` |
 | `plugins/`     | `--plugin-dir` |
 | `mcp.json`     | `--mcp-config` |
 | `settings.json`| `--settings`, layered over `claude-settings.json` |
