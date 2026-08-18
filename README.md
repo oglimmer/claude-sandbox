@@ -287,11 +287,17 @@ directory it works on, recorded in `profiles/<name>/workspace` and mounted at
 
 | In the profile | Reaches Claude Code as |
 | -------------- | ---------------------- |
-| `skills/`      | copied into `~/.claude/skills` (after `profiles/common/skills`, so it can shadow by name) |
+| `skills/`      | copied into `~/.claude/skills` (after the image's own skills and `profiles/common/skills`, so it can shadow either by name) |
 | `output-styles/` | copied into `~/.claude/output-styles` (same precedence); select one with `outputStyle` in `settings.json` |
 | `plugins/`     | `--plugin-dir` |
 | `mcp.json`     | `--mcp-config` |
 | `settings.json`| `--settings`, layered over `claude-settings.json` |
+
+The image also ships its own skills in `/opt/sandbox/skills`, copied in ahead of
+both — currently [`/bro`](https://github.com/luchasarie/bro-skill), which
+re-explains the previous answer in plain language. They are there in every
+sandbox without any profile setup, and a profile can still replace one by using
+the same directory name.
 
 Everything is optional — an empty profile behaves exactly like the sandbox did
 before profiles existed. MCP servers can equally be added from inside with

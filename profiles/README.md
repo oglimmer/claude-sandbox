@@ -30,7 +30,7 @@ profiles/
 | Piece | Mechanism |
 | ----- | --------- |
 | `workspace` | Read by `oglimmer.sh run`, exported as `WORKSPACE_DIR`, bind-mounted at `/workspace` by both the `claude` and `dind` services |
-| `skills/` | Copied into `~/.claude/skills` at startup — `common/` first, then the profile on top, so a profile can shadow a common skill by name |
+| `skills/` | Copied into `~/.claude/skills` at startup — the image's own `/opt/sandbox/skills` first, then `common/`, then the profile on top, so a profile can shadow a common or built-in skill by name |
 | `output-styles/` | Copied into `~/.claude/output-styles` the same way. Copying only puts the style *on the shelf*; something still has to select it by its `name:` field — see below |
 | `plugins/` | `--plugin-dir`, which loads plugin directories without a marketplace install |
 | `mcp.json` | `--mcp-config` |
@@ -39,7 +39,9 @@ profiles/
 
 Skills are rebuilt from the read-only mounts on every start, so switching
 profiles never leaves another workspace's skills behind, and host-side edits
-land on the next run.
+land on the next run. The rebuild starts from the skills baked into the image
+(`/opt/sandbox/skills`, currently just [`/bro`](https://github.com/luchasarie/bro-skill)),
+which is why those are present even in a profile that has no `skills/` at all.
 
 Output styles are copied but not rebuilt — the directory is never wiped. A
 leftover skill from another profile is live and the agent acts on it; a leftover

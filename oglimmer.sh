@@ -49,6 +49,12 @@ SETTINGS_FILE="$SANDBOX_HOME/claude-settings.json"
 # Must match the `image:` of the claude service in docker-compose.yml.
 IMAGE_NAME="claude-sandbox:latest"
 
+# Skills baked into the image at /opt/sandbox/skills, which the entrypoint
+# copies into ~/.claude/skills before common/ and the profile. Listed here so
+# `list` can show them and so they are not mistaken for leftovers in
+# profile-state/ — must match the skills the Dockerfile installs.
+BUILTIN_SKILLS=(bro)
+
 VERBOSE="${VERBOSE:-false}"
 DRY_RUN="${DRY_RUN:-false}"
 HELP=false
@@ -565,8 +571,26 @@ env_var_status() {
     fi
 }
 
+is_builtin_skill() {
+    local name="$1" builtin
+    for builtin in "${BUILTIN_SKILLS[@]}"; do
+        [[ "$name" == "$builtin" ]] && return 0
+    done
+    return 1
+}
+
 list_skills() {
     local profile="$1" label found=false
+    # The image's own skills are always there, so they head the list; they are
+    # not on disk here, which is why they are named rather than found.
+    for skill in "${BUILTIN_SKILLS[@]}"; do
+        found=true
+        label="$skill"
+        if [[ -d "$PROFILES_DIR/common/skills/$skill" || -d "$PROFILES_DIR/$profile/skills/$skill" ]]; then
+            label="$skill ${DIM}(shadowed below)${RESET}"
+        fi
+        echo -e "    ${DIM}image/${RESET}  $label"
+    done
     for src in "common" "$profile"; do
         [[ -d "$PROFILES_DIR/$src/skills" ]] || continue
         while IFS= read -r skill; do
@@ -576,6 +600,8 @@ list_skills() {
             # A profile skill with the same name wins at copy time.
             if [[ "$src" != "common" && -d "$PROFILES_DIR/common/skills/$skill" ]]; then
                 label="$skill ${YELLOW}(shadows common)${RESET}"
+            elif is_builtin_skill "$skill"; then
+                label="$skill ${YELLOW}(shadows image)${RESET}"
             fi
             if [[ ! -f "$PROFILES_DIR/$src/skills/$skill/SKILL.md" ]]; then
                 label="$label ${RED}(no SKILL.md — will not load)${RESET}"
@@ -615,6 +641,8 @@ list_runtime() {
         [[ -n "$name" ]] || continue
         [[ -d "$PROFILES_DIR/$profile/skills/$name" ]] && continue
         [[ -d "$PROFILES_DIR/common/skills/$name" ]] && continue
+        # Baked into the image, so it is put back by the next start, not wiped.
+        is_builtin_skill "$name" && continue
         lines+=("    ${DIM}skill${RESET}   $name ${YELLOW}(wiped on next start)${RESET}")
     done < <(find -L "$state/skills" -mindepth 1 -maxdepth 1 -type d -exec basename {} \; 2>/dev/null | sort)
 

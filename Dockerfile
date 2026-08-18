@@ -259,6 +259,27 @@ RUN set -eux; \
 RUN mkdir -p /opt/sandbox && chmod 0755 /opt/sandbox
 COPY --chmod=0644 sandbox-CLAUDE.md /opt/sandbox/CLAUDE.md
 
+# ---- Built-in skills -------------------------------------------------------
+# Skills that belong to the image rather than to a host-side profile: every
+# sandbox has them, whatever profile is selected and whether or not the host
+# even has a profiles directory yet. The entrypoint copies them into
+# ~/.claude/skills first, so profiles/common or the profile itself can still
+# shadow one by reusing its directory name.
+#
+# /bro re-explains the last answer in plain language (github.com/luchasarie/
+# bro-skill). It is a single SKILL.md, so it is fetched directly rather than
+# cloned. Pinned to a commit like the tools above: `main` would resolve once,
+# then sit in the build cache forever — neither current nor reproducible. The
+# grep is the download's sanity check; a 404 page or an HTML redirect would
+# otherwise be installed as a skill and only fail at runtime.
+ARG BRO_SKILL_REF=01e51f8092973be58eff3b7271282bd8488a02ae
+RUN set -eux; \
+    mkdir -p /opt/sandbox/skills/bro; \
+    curl -fsSL "https://raw.githubusercontent.com/luchasarie/bro-skill/${BRO_SKILL_REF}/SKILL.md" \
+        -o /opt/sandbox/skills/bro/SKILL.md; \
+    grep -q '^name: bro$' /opt/sandbox/skills/bro/SKILL.md; \
+    chmod -R a+rX /opt/sandbox/skills
+
 # Login shells (bash -l) re-source /etc/profile and reset PATH, dropping the
 # Docker ENV additions below. Mirror them into a profile.d script so `go` and
 # the user npm bins resolve in interactive login shells too.

@@ -83,11 +83,15 @@ fi
 # Skills have to live at ~/.claude/skills for Claude Code to discover them, so
 # they get copied rather than mounted. The tree is rebuilt from scratch on every
 # start — otherwise skills from a previously-selected profile would linger in
-# the volume and silently apply to the wrong workspace. common/ is copied first
-# so a profile can shadow a common skill by using the same name.
+# the volume and silently apply to the wrong workspace.
+#
+# Three sources, least specific first, each copied over the last, so a name can
+# be shadowed by the more specific one: /opt/sandbox/skills is baked into the
+# image (every sandbox has those, no profile required), then common/, then the
+# profile.
 rm -rf "${HOME}/.claude/skills"
 mkdir -p "${HOME}/.claude/skills"
-for _skills in /mnt/profile-common/skills /mnt/profile/skills; do
+for _skills in /opt/sandbox/skills /mnt/profile-common/skills /mnt/profile/skills; do
     [ -d "${_skills}" ] || continue
     cp -a "${_skills}/." "${HOME}/.claude/skills/" 2>/dev/null || true
 done
