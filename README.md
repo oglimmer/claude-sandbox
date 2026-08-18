@@ -14,6 +14,7 @@ rest of your machine.
 | `entrypoint.sh`      | Seeds git identity, fixes up the ssh config, prepares cache dirs    |
 | `claude-settings.json` | Baseline Claude Code settings, seeded into each profile on first run |
 | `sandbox-CLAUDE.md`  | Instructions baked into the image, installed as `~/.claude/CLAUDE.md` |
+| `sandbox-output-styles/` | Output styles baked into the image; `ELI5` is on by default |
 | `oglimmer.sh`        | Manages profiles and runs the sandbox (`list`, `new`, `run`, `rebuild`, `doctor`) |
 | `.env.example`       | Optional `ANTHROPIC_API_KEY`, git identity, default profile         |
 | `docker-compose.override.yml.example` | Template for machine-specific mounts               |
@@ -288,7 +289,7 @@ directory it works on, recorded in `profiles/<name>/workspace` and mounted at
 | In the profile | Reaches Claude Code as |
 | -------------- | ---------------------- |
 | `skills/`      | copied into `~/.claude/skills` (after the image's own skills and `profiles/common/skills`, so it can shadow either by name) |
-| `output-styles/` | copied into `~/.claude/output-styles` (same precedence); select one with `outputStyle` in `settings.json` |
+| `output-styles/` | copied into `~/.claude/output-styles` (same precedence, after the image's own); select one with `outputStyle` in `settings.json` |
 | `plugins/`     | `--plugin-dir` |
 | `mcp.json`     | `--mcp-config` |
 | `settings.json`| `--settings`, layered over `claude-settings.json` |
@@ -298,6 +299,14 @@ both — currently [`/bro`](https://github.com/luchasarie/bro-skill), which
 re-explains the previous answer in plain language. They are there in every
 sandbox without any profile setup, and a profile can still replace one by using
 the same directory name.
+
+Output styles work the same way: `sandbox-output-styles/` is baked in at
+`/opt/sandbox/output-styles`, and `claude-settings.json` selects `ELI5` — plain
+language, short sentences — as the baseline `outputStyle`. So a sandbox on a
+brand-new host answers in it without any setup. Being a baseline, it is only
+seeded into a profile the first time that profile runs: `/output-style` inside
+the container switches it and the change sticks, and profiles that already have
+state keep whatever they had.
 
 Everything is optional — an empty profile behaves exactly like the sandbox did
 before profiles existed. MCP servers can equally be added from inside with

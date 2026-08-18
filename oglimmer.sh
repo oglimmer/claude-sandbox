@@ -55,6 +55,12 @@ IMAGE_NAME="claude-sandbox:latest"
 # profile-state/ — must match the skills the Dockerfile installs.
 BUILTIN_SKILLS=(bro)
 
+# Output styles baked into the image at /opt/sandbox/output-styles, copied the
+# same way and listed here for the same reason. Filenames, because that is what
+# a profile shadows; `outputStyle` picks one by the `name:` inside the file.
+# Must match the files in sandbox-output-styles/.
+BUILTIN_STYLES=(ELI5.md)
+
 VERBOSE="${VERBOSE:-false}"
 DRY_RUN="${DRY_RUN:-false}"
 HELP=false
@@ -612,6 +618,65 @@ list_skills() {
     [[ "$found" == "true" ]] || echo -e "    ${DIM}none${RESET}"
 }
 
+is_builtin_style() {
+    local name="$1" builtin
+    for builtin in "${BUILTIN_STYLES[@]}"; do
+        [[ "$name" == "$builtin" ]] && return 0
+    done
+    return 1
+}
+
+# Which style file each layer contributes, and — separately — which one is
+# actually switched on. Shipping a style and selecting it are different steps,
+# and a style sitting unused on the shelf looks identical to one that is live.
+list_output_styles() {
+    local profile="$1" label
+    for style in "${BUILTIN_STYLES[@]}"; do
+        label="$style"
+        if [[ -f "$PROFILES_DIR/common/output-styles/$style" || -f "$PROFILES_DIR/$profile/output-styles/$style" ]]; then
+            label="$style ${DIM}(shadowed below)${RESET}"
+        fi
+        echo -e "    ${DIM}image/${RESET}  $label"
+    done
+    for src in "common" "$profile"; do
+        [[ -d "$PROFILES_DIR/$src/output-styles" ]] || continue
+        while IFS= read -r style; do
+            [[ -n "$style" ]] || continue
+            label="$style"
+            if [[ "$src" != "common" && -f "$PROFILES_DIR/common/output-styles/$style" ]]; then
+                label="$style ${YELLOW}(shadows common)${RESET}"
+            elif is_builtin_style "$style"; then
+                label="$style ${YELLOW}(shadows image)${RESET}"
+            fi
+            echo -e "    ${DIM}${src}/${RESET} $label"
+        done < <(find -L "$PROFILES_DIR/$src/output-styles" -mindepth 1 -maxdepth 1 -type f -name '*.md' -exec basename {} \; 2>/dev/null | sort)
+    done
+
+    # Precedence as Claude Code sees it: the profile's settings.json arrives as
+    # --settings and wins; otherwise whatever the profile's own state holds,
+    # which is where /output-style writes. claude-settings.json only matters
+    # while that state file does not exist yet — it is a seed, not a fallback.
+    local active="" origin=""
+    if [[ -f "$PROFILES_DIR/$profile/settings.json" ]]; then
+        active=$(jq -r '.outputStyle // empty' "$PROFILES_DIR/$profile/settings.json" 2>/dev/null || true)
+        [[ -n "$active" ]] && origin="profiles/$profile/settings.json"
+    fi
+    if [[ -z "$active" ]]; then
+        if [[ -s "$STATE_DIR/$profile/settings.json" ]]; then
+            active=$(jq -r '.outputStyle // empty' "$STATE_DIR/$profile/settings.json" 2>/dev/null || true)
+            [[ -n "$active" ]] && origin="profile-state/$profile/settings.json"
+        elif [[ -f "$SETTINGS_FILE" ]]; then
+            active=$(jq -r '.outputStyle // empty' "$SETTINGS_FILE" 2>/dev/null || true)
+            [[ -n "$active" ]] && origin="claude-settings.json, on first run"
+        fi
+    fi
+    if [[ -n "$active" ]]; then
+        echo -e "    ${DIM}active${RESET}  ${BOLD}${active}${RESET} ${DIM}(from ${origin})${RESET}"
+    else
+        echo -e "    ${DIM}active${RESET}  ${DIM}none — set outputStyle in a settings.json${RESET}"
+    fi
+}
+
 list_plugins() {
     local profile="$1" found=false
     if [[ -d "$PROFILES_DIR/$profile/plugins" ]]; then
@@ -765,6 +830,9 @@ cmd_list() {
     echo
     echo -e "  ${BOLD}Skills${RESET}"
     list_skills "$profile"
+    echo
+    echo -e "  ${BOLD}Output styles${RESET}"
+    list_output_styles "$profile"
     echo
     echo -e "  ${BOLD}Plugins${RESET}"
     list_plugins "$profile"
@@ -1528,6 +1596,9 @@ build_compose_args() {
     # which is the checkout itself in development — the same file either way.
     [[ -f "$OVERRIDE_FILE" ]] && COMPOSE_ARGS+=(-f "$OVERRIDE_FILE")
     [[ -f "$ENV_FILE" ]] && COMPOSE_ARGS+=(--env-file "$ENV_FILE")
+    # Explicit: with neither file present the last test is false, and under
+    # `set -e` a function returning 1 aborts the caller before it ever builds.
+    return 0
 }
 
 # `brew upgrade` refreshes the Dockerfile but not the built image, and

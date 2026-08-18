@@ -97,8 +97,10 @@ for _skills in /opt/sandbox/skills /mnt/profile-common/skills /mnt/profile/skill
 done
 
 # Output styles need the same treatment: Claude Code only discovers them under
-# ~/.claude/output-styles, so they are copied out of the read-only mounts too,
-# common/ first and the profile on top.
+# ~/.claude/output-styles, so they are copied out of the image and the read-only
+# mounts too — /opt/sandbox/output-styles first (there on every host, profile or
+# not, and where the ELI5 style claude-settings.json selects by default comes
+# from), then common/, then the profile on top.
 #
 # Unlike skills, the directory is NOT wiped first. A leftover skill from another
 # profile is live — the agent loads it and acts on it. A leftover output style is
@@ -106,7 +108,7 @@ done
 # created inside the container with /output-style:new, which live in exactly this
 # directory. Stale files here cost nothing; deleting the user's work does.
 mkdir -p "${HOME}/.claude/output-styles"
-for _styles in /mnt/profile-common/output-styles /mnt/profile/output-styles; do
+for _styles in /opt/sandbox/output-styles /mnt/profile-common/output-styles /mnt/profile/output-styles; do
     [ -d "${_styles}" ] || continue
     cp -a "${_styles}/." "${HOME}/.claude/output-styles/" 2>/dev/null || true
 done

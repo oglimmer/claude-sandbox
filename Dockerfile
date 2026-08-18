@@ -280,6 +280,22 @@ RUN set -eux; \
     grep -q '^name: bro$' /opt/sandbox/skills/bro/SKILL.md; \
     chmod -R a+rX /opt/sandbox/skills
 
+# ---- Built-in output styles ------------------------------------------------
+# Output styles that belong to the image, for the same reason as the skills
+# above: a fresh host has no profiles directory, so anything shipped only under
+# profiles/common would not exist there at all. The entrypoint copies these into
+# ~/.claude/output-styles ahead of the host's, so a profile can still shadow one
+# by reusing its filename.
+#
+# ELI5 is also the default `outputStyle` in claude-settings.json, which selects
+# a style by its `name:` field rather than its filename — hence the grep. A
+# rename inside the file would leave that setting pointing at nothing, and
+# Claude Code falls back to its built-in style without saying so.
+COPY sandbox-output-styles/ /opt/sandbox/output-styles/
+RUN set -eux; \
+    grep -q '^name: ELI5$' /opt/sandbox/output-styles/ELI5.md; \
+    chmod -R a+rX /opt/sandbox/output-styles
+
 # Login shells (bash -l) re-source /etc/profile and reset PATH, dropping the
 # Docker ENV additions below. Mirror them into a profile.d script so `go` and
 # the user npm bins resolve in interactive login shells too.

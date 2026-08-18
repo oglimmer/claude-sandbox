@@ -14,7 +14,7 @@ exactly like the sandbox did before profiles existed.
 profiles/
   common/
     skills/            skills every profile gets
-    output-styles/     output styles every profile gets
+    output-styles/     output styles every profile gets (over the image's)
   <profile>/
     workspace          the host directory to mount at /workspace
     skills/            skills only this workspace gets (copied over common/)
@@ -31,7 +31,7 @@ profiles/
 | ----- | --------- |
 | `workspace` | Read by `oglimmer.sh run`, exported as `WORKSPACE_DIR`, bind-mounted at `/workspace` by both the `claude` and `dind` services |
 | `skills/` | Copied into `~/.claude/skills` at startup — the image's own `/opt/sandbox/skills` first, then `common/`, then the profile on top, so a profile can shadow a common or built-in skill by name |
-| `output-styles/` | Copied into `~/.claude/output-styles` the same way. Copying only puts the style *on the shelf*; something still has to select it by its `name:` field — see below |
+| `output-styles/` | Copied into `~/.claude/output-styles` the same way, after the image's own `/opt/sandbox/output-styles`. Copying only puts the style *on the shelf*; something still has to select it by its `name:` field — see below |
 | `plugins/` | `--plugin-dir`, which loads plugin directories without a marketplace install |
 | `mcp.json` | `--mcp-config` |
 | `settings.json` | `--settings`, layered on the repo-wide `claude-settings.json` |
@@ -49,6 +49,13 @@ style is inert unless something names it, and wiping would delete styles created
 inside the container with `/output-style:new`, which land in that same
 directory. Host-side edits still win, because the copy runs after.
 
+The image ships `ELI5` (plain language, short sentences) from
+`../sandbox-output-styles`, and `../claude-settings.json` selects it — so it is
+present and active on a host that has no `profiles/` yet at all. Both halves
+have to be baked in for that: a style shipped only under `common/` would not
+exist on a fresh Homebrew install, since the formula installs the build context,
+not this directory.
+
 ## Selecting an output style
 
 Shipping the file is only half of it. `outputStyle` in a settings file picks
@@ -57,12 +64,17 @@ which one is active, by the style's `name:` field — not its filename:
 | Where | Effect |
 | ----- | ------ |
 | `profiles/<name>/settings.json` | That profile only. `--settings` is applied on every start, so it takes effect immediately on existing profiles |
-| `../claude-settings.json` | The baseline for profiles created from now on. Seeded into `~/.claude/settings.json` on **first run only**, so profiles that already have state keep whatever they have |
+| `../claude-settings.json` | The baseline for profiles created from now on — currently `ELI5`. Seeded into `~/.claude/settings.json` on **first run only**, so profiles that already have state keep whatever they have |
 | `/output-style` inside the container | Written to `profile-state/<name>/settings.json` by the CLI, and it persists |
 
 Prefer the profile's `settings.json` when you want a style on now. Reach for
 `claude-settings.json` only when you want it to be the default every *new*
-profile inherits.
+profile inherits. Note the cost of the first option: `--settings` is reapplied
+on every start, so it also overrides a `/output-style` chosen inside the
+container.
+
+`../oglimmer.sh list` prints which style each layer contributes and which one is
+actually switched on.
 
 ## Secrets in mcp.json
 

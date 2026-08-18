@@ -15,10 +15,12 @@ class ClaudeSandbox < Formula
     # together and are read-only: the script resolves its own symlink to find
     # them, and keeps everything mutable in ~/.claude-sandbox instead, so a
     # `brew upgrade` never touches a profile or its session history.
-    # sandbox-CLAUDE.md is part of the Docker build context (the Dockerfile
-    # COPYs it), so it has to travel with them or the image build fails.
+    # sandbox-CLAUDE.md and sandbox-output-styles are part of the Docker build
+    # context (the Dockerfile COPYs them), so they have to travel with the rest
+    # or the image build fails.
     libexec.install "docker-compose.yml", "Dockerfile", "entrypoint.sh",
                     "claude-settings.json", "sandbox-CLAUDE.md",
+                    "sandbox-output-styles",
                     ".env.example", "oglimmer.sh",
                     "docker-compose.override.yml.example"
 

@@ -9,6 +9,7 @@
     "command": "/bin/bash ~/.claude/statusline/statusline.sh"
   },
   "tui": "fullscreen",
+  "outputStyle": "ELI5",
   "skipDangerousModePermissionPrompt": true,
   "theme": "dark"
 }
