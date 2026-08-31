@@ -165,11 +165,10 @@ write to. `./oglimmer.sh run` creates it as you, and refuses a profile name it
 doesn't recognise instead of silently starting an empty one. Afterwards
 `docker compose run --rm claude` works fine.
 
-The default command is `claude --dangerously-skip-permissions`, so Claude Code
-runs without stopping to ask for approval on each action. **This is only safe
-because the container itself is the sandbox** — the agent is confined to the
-mounted workspace, runs non-root, and can't escalate. Never use that flag on a
-bare host.
+The default command is `claude --permission-mode auto`, so Claude Code decides
+for itself which actions need approval instead of stopping on each one. **This
+is only safe because the container itself is the sandbox** — the agent is
+confined to the mounted workspace, runs non-root, and can't escalate.
 
 On first launch, run `/login` inside the CLI to authenticate via OAuth. Your
 login is stored in `profile-state/<profile>/` on the host and survives rebuilds.
@@ -216,7 +215,7 @@ CLAUDE_ARGS=-c docker compose run --rm claude
 containing spaces. For those, override the command outright:
 
 ```bash
-docker compose run --rm claude claude --dangerously-skip-permissions -c
+docker compose run --rm claude claude --permission-mode auto -c
 ```
 
 > Sessions are keyed by working directory, and `working_dir` is always

@@ -399,4 +399,4 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
 # $CLAUDE_PROFILE_ARGS is assembled by the entrypoint from the mounted profile
 # (--mcp-config / --plugin-dir / --settings) and comes first, so a flag passed
 # per-run through CLAUDE_ARGS still wins.
-CMD ["sh", "-c", "exec claude --dangerously-skip-permissions $CLAUDE_PROFILE_ARGS $CLAUDE_ARGS"]
+CMD ["sh", "-c", "exec claude --permission-mode auto $CLAUDE_PROFILE_ARGS $CLAUDE_ARGS"]
