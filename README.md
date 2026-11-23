@@ -244,6 +244,25 @@ cp .env.example .env
 docker compose up -d
 ```
 
+### MCP server logins (OAuth)
+
+Some MCP servers make you log in through the browser. The last step fails with
+"Unable to connect" on `http://localhost:PORT/callback?...`. The reason: Claude
+Code waits for that URL inside the container, and the host's `localhost` can't
+reach it. The port is random per login, so compose can't publish it.
+
+Hand the URL over by hand:
+
+1. In the sandbox, start the login (`/mcp` → the server → authenticate).
+2. Log in in the browser. Copy the URL from the tab that failed to connect.
+3. On the host, right away (the login stops waiting after a short time):
+
+```bash
+claude-sandbox mcp-callback      # or ./oglimmer.sh mcp-callback; asks for the URL
+```
+
+It replays the URL inside the running sandbox. Check the result with `/mcp`.
+
 ## Git identity
 
 Commits made inside the sandbox need a name/email. The container's entrypoint

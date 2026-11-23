@@ -72,7 +72,7 @@ CREATE=false
 IMPLIED_RUN=false
 [[ "$SCRIPT_NAME" == "claude-sandbox" ]] && IMPLIED_RUN=true
 
-KNOWN_COMMANDS=(list profiles new workspace mcp-add mcp-rm skill-add skill-rm doctor run rebuild help)
+KNOWN_COMMANDS=(list profiles new workspace mcp-add mcp-rm mcp-callback skill-add skill-rm doctor run rebuild help)
 
 COMMAND=""
 PROFILE_OVERRIDE=""
@@ -173,6 +173,9 @@ ${BOLD}COMMANDS:${RESET}
     mcp-add PROFILE NAME --url URL
                                 Add an http/sse MCP server to the profile
     mcp-rm PROFILE NAME         Remove an MCP server from the profile
+    mcp-callback [URL]          Finish an MCP server's OAuth login: give it the
+                                localhost callback URL the browser couldn't
+                                open (asks for it when URL is left out)
     skill-add PROFILE SRC       Copy a skill directory into the profile
     skill-rm PROFILE NAME       Remove a skill from the profile
     doctor                      Check every profile, the ssh-agent and the
@@ -1125,6 +1128,58 @@ cmd_skill_rm() {
     log_success "Removed skill '$name' from profile '$profile'"
 }
 
+# An MCP server's OAuth login ends with the browser redirected to
+# http://localhost:PORT/callback, where Claude Code listens — inside the
+# container. The host's localhost is a different network namespace, so the
+# browser shows "Unable to connect". The port is random per login, so it can't
+# be published in compose either. Instead, hand the URL from the failed tab to
+# the container and replay it there, against the listener that's waiting for it.
+cmd_mcp_callback() {
+    local url="${ARGS[0]:-}"
+    if [[ -z "$url" ]]; then
+        log_info "Paste the URL from the browser tab that failed to connect"
+        read -rp "Callback URL: " url
+    fi
+    url="${url//[[:space:]]/}"
+    if [[ ! "$url" =~ ^http://(localhost|127\.0\.0\.1):[0-9]+/ ]]; then
+        log_error "Expected http://localhost:PORT/callback?code=..., got: ${url:-nothing}"
+        exit 1
+    fi
+
+    check_docker
+    local containers
+    containers=$(docker ps -q \
+        --filter label=com.docker.compose.project=claude-sandbox \
+        --filter label=com.docker.compose.service=claude)
+    if [[ -z "$containers" ]]; then
+        log_error "No sandbox is running — start the MCP login from inside one first"
+        exit 1
+    fi
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo -e "${DIM}[DRY-RUN]${RESET} docker exec CONTAINER curl ... <callback URL>"
+        return 0
+    fi
+
+    # Several sandboxes can run at once (one per profile); only the one that
+    # started this login listens on the port. Try each until one answers.
+    local id code
+    for id in $containers; do
+        log_verbose "Trying container $id"
+        code=$(docker exec "$id" curl -gs -o /dev/null -w '%{http_code}' --max-time 10 "$url" || true)
+        if [[ "$code" =~ ^2 ]]; then
+            log_success "Login delivered to the sandbox — check it with /mcp"
+            return 0
+        fi
+        if [[ "$code" != "000" && -n "$code" ]]; then
+            log_error "The sandbox answered HTTP $code — the login was rejected. Start it again."
+            exit 1
+        fi
+    done
+    log_error "No sandbox is listening on that port. The login timed out or was cancelled — start it again and run this right away."
+    exit 1
+}
+
 # The container never gets a usable private key: the host's is passphrase-locked
 # and the macOS Keychain that unlocks it doesn't exist in Linux. Signing is
 # forwarded to the host's ssh-agent instead — so an agent holding no identity is
@@ -1675,6 +1730,7 @@ main() {
         workspace) cmd_workspace ;;
         mcp-add)   cmd_mcp_add ;;
         mcp-rm)    cmd_mcp_rm ;;
+        mcp-callback) cmd_mcp_callback ;;
         skill-add) cmd_skill_add ;;
         skill-rm)  cmd_skill_rm ;;
         doctor)    cmd_doctor ;;
