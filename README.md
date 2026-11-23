@@ -85,7 +85,7 @@ on arm64 images (Apple Silicon). `sandbox-CLAUDE.md` tells the agent to check fo
 it and fall back to `ast-grep`/`sd`.
 
 Pinned versions are build args (`SD_VERSION`, `DELTA_VERSION`, `HYPERFINE_VERSION`,
-`WATCHEXEC_VERSION`, `TRUFFLEHOG_VERSION`, `COMBY_VERSION`); the rest track their
+`WATCHEXEC_VERSION`, `TRUFFLEHOG_VERSION`, `COMBY_VERSION`, `DIFFT_VERSION`); the rest track their
 project's latest release at build time.
 
 ## Requirements

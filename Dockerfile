@@ -179,6 +179,7 @@ ARG HYPERFINE_VERSION=1.20.0
 ARG WATCHEXEC_VERSION=2.5.1
 ARG TRUFFLEHOG_VERSION=3.95.9
 ARG COMBY_VERSION=1.8.1
+ARG DIFFT_VERSION=0.72.0
 RUN set -eux; \
     arch="$(dpkg --print-architecture)"; \
     case "$arch" in \
@@ -194,7 +195,7 @@ RUN set -eux; \
     dl "https://github.com/chmln/sd/releases/download/v${SD_VERSION}/sd-v${SD_VERSION}-${triple}-unknown-linux-musl.tar.gz" sd.tgz; \
     tar -xzf sd.tgz --strip-components=1 -C /usr/local/bin --wildcards '*/sd'; \
     \
-    dl "https://github.com/Wilfred/difftastic/releases/latest/download/difft-${triple}-unknown-linux-gnu.tar.gz" difft.tgz; \
+    dl "https://github.com/Wilfred/difftastic/releases/download/${DIFFT_VERSION}/difft-${DIFFT_VERSION}-${triple}-unknown-linux-gnu.tar.gz" difft.tgz; \
     tar -xzf difft.tgz -C /usr/local/bin difft; \
     \
     dl "https://github.com/dandavison/delta/releases/download/${DELTA_VERSION}/delta-${DELTA_VERSION}-${triple}-unknown-linux-gnu.tar.gz" delta.tgz; \
